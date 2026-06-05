@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Training / Unsloth</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="hero">
+    <div>
+      <p class="eyebrow">Mission Control lab</p>
+      <h1>AI Training / Unsloth</h1>
+      <p class="subtle">Thin local dashboard over the existing CLI scripts. CLI remains the source of truth.</p>
+    </div>
+    <div class="status-pill" id="overall-status">Loading…</div>
+  </header>
+
+  <main class="grid">
+    <section class="card span-2">
+      <div class="card-title">
+        <h2>Environment & GPU</h2>
+        <button id="refresh-status">Refresh</button>
+      </div>
+      <div class="metrics" id="metrics"></div>
+      <pre class="mini" id="verify-summary"></pre>
+    </section>
+
+    <section class="card">
+      <h2>Actions</h2>
+      <p class="subtle">Setup is intentionally guarded; it can download/install packages.</p>
+      <label>Verify timeout seconds
+        <input id="verify-timeout" type="number" min="5" max="600" value="180" />
+      </label>
+      <div class="actions">
+        <button data-run="verify">Run Verify</button>
+        <button class="danger" data-run="setup">Run Setup / Repair</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Smoke Training</h2>
+      <p class="subtle">Starts the existing Gemma orchestrator smoke script with a safe RUN_ID.</p>
+      <label>Run ID
+        <input id="run-id" placeholder="gemma-orchestrator-smoke-ui-YYYYMMDD-HHMMSS" />
+      </label>
+      <button data-run="smoke-train">Launch Smoke Train</button>
+      <p class="warning">Do not train on secrets, credentials, private raw chats, or stale task artifacts.</p>
+    </section>
+
+    <section class="card span-2">
+      <div class="card-title">
+        <h2>Jobs & Logs</h2>
+        <button id="refresh-jobs">Refresh jobs</button>
+      </div>
+      <div id="jobs"></div>
+      <pre class="log" id="job-log">Select a job to view its log.</pre>
+    </section>
+
+    <section class="card span-2">
+      <div class="card-title">
+        <h2>Artifacts</h2>
+        <button id="artifact-up">Up</button>
+      </div>
+      <div class="tabs" id="artifact-tabs"></div>
+      <div class="path" id="artifact-path"></div>
+      <div id="artifacts"></div>
+      <pre class="preview" id="artifact-preview">Select a previewable text/log/json file.</pre>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

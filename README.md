@@ -39,9 +39,19 @@ Mission Control app name: `ai-training`
 
 Commands:
 
+- `ui` — start the local Unsloth control panel at `http://127.0.0.1:5196/`
 - `setup` — run/repair the Unsloth environment install
 - `verify` — check GPU, torch, and Unsloth imports
 - `shell` — open a Windows Terminal tab into WSL with the env activated
+
+The control panel is intentionally thin and uses the existing CLI scripts as the source of truth. It provides GPU/environment status, guarded setup/verify buttons, smoke-training launch, job logs, and a read-only artifact browser for `S:\AITraining`.
+
+Manual launch from WSL:
+
+```bash
+cd /mnt/c/projects/ai-training
+./scripts/run_control_panel.sh
+```
 
 ## First experiments
 

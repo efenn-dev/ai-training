@@ -11,6 +11,7 @@ htmlcov/
 
 # Virtual environments
 .venv/
+.control-panel-venv/
 venv/
 env/
 

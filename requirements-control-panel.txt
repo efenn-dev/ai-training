@@ -1,0 +1,2 @@
+# The first control-panel version intentionally uses only Python stdlib.
+# Keep this file so future dependencies are explicit.
