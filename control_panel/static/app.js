@@ -38,11 +38,49 @@ function latestVerifyBadge(latest) {
   return '<span class="status-bad">Verify needs attention</span>';
 }
 
+function renderTrainingState(training) {
+  const payload = training || {};
+  const stateName = payload.state || 'unknown';
+  const titleMap = {
+    idle: 'No training running',
+    verifying: 'Verify running',
+    training: 'Training running',
+    setup: 'Setup / repair running',
+    failed: 'Last training failed',
+    unknown: 'State unknown',
+  };
+  $('training-state-title').textContent = titleMap[stateName] || 'State unknown';
+  $('training-state-chip').textContent = stateName;
+  $('training-state-chip').className = `state-chip state-${stateName}`;
+  $('training-state-summary').textContent = payload.summary || 'No training summary available.';
+
+  const latestEval = payload.latest_eval || {};
+  const gates = latestEval.gates || {};
+  const gateText = Object.entries(gates).length
+    ? Object.entries(gates).map(([name, gate]) => `${name}: ${gate.passed ? 'pass' : 'fail'}${gate.actual !== undefined ? ` (${gate.actual})` : ''}`).join(' · ')
+    : 'No eval gates found';
+
+  const detailRows = [
+    ['Active job', payload.active_job_id || 'none'],
+    ['Last adapter', payload.last_training_adapter || 'none'],
+    ['Last train log', payload.last_training_log || 'none'],
+    ['Latest eval', latestEval.path || 'none'],
+    ['Eval gates', gateText],
+    ['Next action', payload.next_recommended_action || 'Review curated data before training.'],
+  ];
+  $('training-state-details').innerHTML = detailRows.map(([label, value]) => `
+    <div class="training-detail">
+      <span>${esc(label)}</span>
+      <b>${esc(value)}</b>
+    </div>`).join('');
+}
+
 async function refreshStatus() {
   try {
     const data = await api('/api/status');
     const gpu = data.gpu?.gpus?.[0] || {};
     $('overall-status').innerHTML = latestVerifyBadge(data.latest_verify);
+    renderTrainingState(data.training_state);
     const verify = data.latest_verify || {};
     const checks = verify.checks || {};
     $('metrics').innerHTML = [

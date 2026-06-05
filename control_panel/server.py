@@ -209,6 +209,116 @@ def disk_status(path: Path) -> dict[str, Any]:
         return {"ok": False, "error": repr(exc)}
 
 
+def newest_path(paths: list[Path]) -> Path | None:
+    existing = [path for path in paths if path.exists()]
+    if not existing:
+        return None
+    return max(existing, key=lambda path: path.stat().st_mtime)
+
+
+def newest_rglob(root: Path, pattern: str) -> Path | None:
+    try:
+        if not root.exists():
+            return None
+        return newest_path([path for path in root.rglob(pattern) if path.is_file()])
+    except OSError:
+        return None
+
+
+def newest_adapter_dir() -> Path | None:
+    root = ARTIFACT_ROOTS["adapters"]
+    try:
+        if not root.exists():
+            return None
+        candidates = [path for path in root.glob("*/adapter") if path.is_dir()]
+        return newest_path(candidates)
+    except OSError:
+        return None
+
+
+def latest_eval_summary(path: Path | None) -> dict[str, Any] | None:
+    if not path:
+        return None
+    data = read_json(path)
+    if not isinstance(data, dict):
+        return {"path": str(path), "error": "comparison report is not a JSON object"}
+    gates = data.get("promotion_gates")
+    gate_summary: dict[str, Any] = {}
+    if isinstance(gates, dict):
+        for name, payload in gates.items():
+            if isinstance(payload, dict):
+                gate_summary[name] = {
+                    "passed": payload.get("passed"),
+                    "actual": payload.get("actual"),
+                    "threshold": payload.get("threshold"),
+                }
+    adapter_metrics = data.get("adapter", {}).get("metrics", {}) if isinstance(data.get("adapter"), dict) else {}
+    return {
+        "path": str(path),
+        "promotion_ready": data.get("promotion_ready"),
+        "gates": gate_summary,
+        "adapter_metrics": adapter_metrics if isinstance(adapter_metrics, dict) else {},
+    }
+
+
+def training_state_payload() -> dict[str, Any]:
+    with _lock:
+        jobs_sorted = sorted(_jobs.values(), key=lambda job: job.started_at, reverse=True)
+        active = next((job for job in jobs_sorted if job.status == "running"), None)
+        latest_job = jobs_sorted[0] if jobs_sorted else None
+
+    adapter = newest_adapter_dir()
+    latest_train_log = newest_rglob(RUNS_ROOT, "*train*.log")
+    latest_eval_path = newest_rglob(RUNS_ROOT, "comparison-report.json")
+    latest_eval = latest_eval_summary(latest_eval_path)
+
+    base: dict[str, Any] = {
+        "state": "idle",
+        "summary": "No training running.",
+        "active_job_id": None,
+        "active_command": None,
+        "last_training_run": str(latest_train_log.parent) if latest_train_log else None,
+        "last_training_log": str(latest_train_log) if latest_train_log else None,
+        "last_training_adapter": str(adapter) if adapter else None,
+        "latest_eval": latest_eval,
+        "next_recommended_action": "Collect/review more curated examples before starting another adapter.",
+    }
+
+    if active:
+        base["active_job_id"] = active.id
+        base["active_command"] = active.command
+        if active.command == "verify":
+            base["state"] = "verifying"
+            base["summary"] = "Verify running. Training is not running."
+            base["next_recommended_action"] = "Wait for verify to finish; only train if CUDA, Unsloth, and HF imports pass."
+        elif active.command == "setup":
+            base["state"] = "setup"
+            base["summary"] = "Setup/repair running. Do not start training yet."
+            base["next_recommended_action"] = "Wait for setup to finish, then run verify."
+        elif active.command == "smoke-train":
+            run_id = active.env.get("RUN_ID") or active.id
+            base["state"] = "training"
+            base["summary"] = f"Training running: {run_id}. GPU may be active."
+            base["next_recommended_action"] = "Let the run finish, then review its adapter/eval artifact before promotion."
+        else:
+            base["state"] = "unknown"
+            base["summary"] = f"Job running: {active.command}. Inspect logs if this was unexpected."
+        return base
+
+    if latest_job and latest_job.command == "smoke-train" and latest_job.status == "failed":
+        base["state"] = "failed"
+        base["summary"] = f"Last training failed. Open log: {latest_job.log_path}"
+        base["next_recommended_action"] = "Inspect the failed training log before launching another run."
+        return base
+
+    if latest_eval and latest_eval.get("promotion_ready") is True and adapter:
+        base["summary"] = f"No training running. Last adapter passed eval: {adapter}"
+        base["next_recommended_action"] = "Proceed with guarded shadow-mode integration planning, not live routing."
+    elif adapter:
+        base["summary"] = f"No training running. Latest adapter found: {adapter}"
+    return base
+
+
 def status_payload() -> dict[str, Any]:
     latest_verify = read_json(RUNS_ROOT / "verify-latest.json")
     roots = {name: {"path": str(path), "exists": path.exists()} for name, path in ARTIFACT_ROOTS.items()}
@@ -225,6 +335,7 @@ def status_payload() -> dict[str, Any]:
         "disk": disk_status(S_ROOT),
         "gpu": gpu_status(),
         "latest_verify": latest_verify,
+        "training_state": training_state_payload(),
         "jobs": jobs,
         "commands": public_commands(),
         "time": now_iso(),
