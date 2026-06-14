@@ -3,81 +3,224 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AI Training / Unsloth</title>
+  <title>George Training Lab</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
   <header class="hero">
     <div>
-      <p class="eyebrow">Mission Control lab</p>
-      <h1>AI Training / Unsloth</h1>
-      <p class="subtle">Thin local dashboard over the existing CLI scripts. CLI remains the source of truth.</p>
+      <p class="eyebrow">Local self-improvement lab</p>
+      <h1>George Training Lab</h1>
+      <p class="subtle">Arena-first workflow: define a task, compare candidate patches, select a winner, then turn reviewed outcomes into evals and training data.</p>
     </div>
     <div class="status-pill" id="overall-status">Loading…</div>
   </header>
 
-  <main class="grid">
-    <section class="card span-2 training-banner" id="training-state-card">
-      <div class="card-title">
+  <nav class="nav-tabs" aria-label="Main sections">
+    <button class="secondary active" data-view="arena-view">Arena</button>
+    <button class="secondary" data-view="training-view">Training</button>
+    <button class="secondary" data-view="trace-lab-view">Trace Lab</button>
+    <button class="secondary" data-view="jobs-view">Jobs & Logs</button>
+    <button class="secondary" data-view="artifacts-view">Artifacts</button>
+  </nav>
+
+  <main>
+    <section id="arena-view" class="view active">
+      <section class="card hero-card">
         <div>
-          <p class="eyebrow">Current training state</p>
-          <h2 id="training-state-title">Loading…</h2>
+          <p class="eyebrow">Safe loop</p>
+          <h2>Observe → Score → Distill → Verify → Promote</h2>
+          <p class="subtle">This app now captures the reviewed patch preference data a local model actually needs. Nothing auto-merges or promotes weights; winners stay behind a manual gate.</p>
         </div>
-        <span class="state-chip" id="training-state-chip">unknown</span>
+        <div class="steps">
+          <span>1. Task</span><span>2. Candidates</span><span>3. Score</span><span>4. Winner</span><span>5. Dataset</span>
+        </div>
+      </section>
+
+      <div class="grid">
+        <section class="card">
+          <h2>Create arena task</h2>
+          <label>Title<input id="arena-title" placeholder="Fix flaky export test" /></label>
+          <label>Repo path<input id="arena-repo" value="/mnt/c/projects/ai-training" /></label>
+          <label>Task prompt<textarea id="arena-prompt" rows="6" placeholder="What should candidate agents change?"></textarea></label>
+          <label>Acceptance criteria<textarea id="arena-acceptance" rows="4" placeholder="Tests, UX expectations, forbidden regressions"></textarea></label>
+          <button id="create-task">Create Task</button>
+        </section>
+
+        <section class="card">
+          <div class="card-title">
+            <h2>Arena tasks</h2>
+            <button class="secondary" id="refresh-arena">Refresh</button>
+          </div>
+          <div id="arena-tasks" class="stack"></div>
+        </section>
       </div>
-      <p class="training-summary" id="training-state-summary">Checking Unsloth state…</p>
-      <div class="training-details" id="training-state-details"></div>
+
+      <section class="card" id="task-detail-card">
+        <div class="card-title">
+          <div>
+            <p class="eyebrow">Selected task</p>
+            <h2 id="selected-task-title">No task selected</h2>
+          </div>
+          <div class="actions">
+            <button class="secondary" id="score-task" disabled>Score Candidates</button>
+          </div>
+        </div>
+        <div id="selected-task-detail" class="task-detail subtle">Pick or create a task to add candidate results.</div>
+
+        <section class="batch-runner">
+          <div class="card-title">
+            <div>
+              <h3>Candidate Batch Runner</h3>
+              <p class="subtle">Creates isolated git worktrees, runs candidate workers, captures diffs/test logs, and imports results back into this task. No commits, no merges.</p>
+            </div>
+            <button id="run-candidate-batch" disabled>Run Candidate Batch</button>
+          </div>
+          <div class="batch-controls">
+            <label>Worker
+              <select id="batch-worker">
+                <option value="scripted-smoke">scripted-smoke (safe plumbing test)</option>
+                <option value="codex">codex (real agent)</option>
+                <option value="claude">claude (real agent)</option>
+              </select>
+            </label>
+            <label>Candidates
+              <input id="batch-count" type="number" min="1" max="3" value="3" />
+            </label>
+            <label>Test command
+              <input id="batch-test-command" placeholder="python3 -m py_compile control_panel/server.py" />
+            </label>
+          </div>
+          <p class="warning">Real agents can spend tokens and edit their isolated worktrees. Review every diff before selecting a winner.</p>
+        </section>
+
+        <div class="grid nested">
+          <section>
+            <h3>Add candidate result</h3>
+            <label>Candidate label<input id="candidate-label" placeholder="codex-run-a" /></label>
+            <label>Summary<textarea id="candidate-summary" rows="3" placeholder="What changed?"></textarea></label>
+            <label>Diff<textarea id="candidate-diff" rows="8" placeholder="Paste git diff or patch here"></textarea></label>
+            <label>Test log<textarea id="candidate-tests" rows="5" placeholder="Paste real test/lint/build output"></textarea></label>
+            <label>Review notes<textarea id="candidate-review" rows="4" placeholder="Reviewer concerns or approval notes"></textarea></label>
+            <button id="add-candidate" disabled>Add Candidate</button>
+          </section>
+          <section>
+            <h3>Candidates & ranking</h3>
+            <div id="candidate-list" class="stack"></div>
+            <pre class="mini" id="arena-review">No review yet.</pre>
+          </section>
+        </div>
+      </section>
     </section>
 
-    <section class="card span-2">
-      <div class="card-title">
-        <h2>Environment & GPU</h2>
-        <button id="refresh-status">Refresh</button>
+    <section id="training-view" class="view">
+      <div class="grid">
+        <section class="card span-2 training-banner" id="training-state-card">
+          <div class="card-title">
+            <div>
+              <p class="eyebrow">Current training state</p>
+              <h2 id="training-state-title">Loading…</h2>
+            </div>
+            <span class="state-chip" id="training-state-chip">unknown</span>
+          </div>
+          <p class="training-summary" id="training-state-summary">Checking Unsloth state…</p>
+          <div class="training-details" id="training-state-details"></div>
+        </section>
+
+        <section class="card span-2">
+          <div class="card-title">
+            <h2>Environment & GPU</h2>
+            <button id="refresh-status">Refresh</button>
+          </div>
+          <div class="metrics" id="metrics"></div>
+          <pre class="mini" id="verify-summary"></pre>
+        </section>
+
+        <section class="card">
+          <h2>Environment actions</h2>
+          <p class="subtle">Setup is guarded because it can download/install packages.</p>
+          <label>Verify timeout seconds<input id="verify-timeout" type="number" min="5" max="600" value="180" /></label>
+          <div class="actions">
+            <button data-run="verify">Run Verify</button>
+            <button class="danger" data-run="setup">Run Setup / Repair</button>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Smoke training</h2>
+          <p class="subtle">Runs the existing Gemma orchestrator smoke script. Use only after verify passes.</p>
+          <label>Run ID<input id="run-id" placeholder="gemma-orchestrator-smoke-ui-YYYYMMDD-HHMMSS" /></label>
+          <button data-run="smoke-train">Launch Smoke Train</button>
+          <p class="warning">Never train on secrets, credentials, raw private chats, or unreviewed agent output.</p>
+        </section>
       </div>
-      <div class="metrics" id="metrics"></div>
-      <pre class="mini" id="verify-summary"></pre>
     </section>
 
-    <section class="card">
-      <h2>Actions</h2>
-      <p class="subtle">Setup is intentionally guarded; it can download/install packages.</p>
-      <label>Verify timeout seconds
-        <input id="verify-timeout" type="number" min="5" max="600" value="180" />
-      </label>
-      <div class="actions">
-        <button data-run="verify">Run Verify</button>
-        <button class="danger" data-run="setup">Run Setup / Repair</button>
+
+    <section id="trace-lab-view" class="view">
+      <section class="card hero-card trace-hero">
+        <div>
+          <p class="eyebrow">Agent trace collection</p>
+          <h2>Capture → Scrub → Normalize → Review → Train</h2>
+          <p class="subtle">Collect Hermes/Codex/Claude work traces, import public trace sets, and track whether data is safe enough for Fable-like LoRA training.</p>
+        </div>
+        <div class="steps trace-steps">
+          <span>Raw</span><span>Scrubbed</span><span>Normalized</span><span>Reviewed</span><span>Exported</span>
+        </div>
+      </section>
+
+      <div class="grid">
+        <section class="card span-2">
+          <div class="card-title">
+            <div>
+              <p class="eyebrow">Trace metrics</p>
+              <h2>Status & corpus health</h2>
+            </div>
+            <button id="refresh-traces">Refresh traces</button>
+          </div>
+          <div class="metrics" id="trace-metrics"></div>
+          <pre class="mini" id="trace-summary-json">Loading trace summary…</pre>
+        </section>
+
+        <section class="card">
+          <h2>Collectors</h2>
+          <p class="subtle">Arena candidate runs now append sanitized sidecar trace events automatically. Use these buttons for one-off imports and source registry updates.</p>
+          <div class="actions">
+            <button id="import-fable-traces">Import Fable Phase 1</button>
+            <button class="secondary" id="write-trace-sources">Write Source Registry</button>
+          </div>
+          <p class="warning">Collection does not approve data for commercial/public use. License and privacy review stay mandatory.</p>
+        </section>
+
+        <section class="card">
+          <h2>Recommended trace sources</h2>
+          <div id="trace-sources" class="stack"></div>
+        </section>
       </div>
     </section>
 
-    <section class="card">
-      <h2>Smoke Training</h2>
-      <p class="subtle">Starts the existing Gemma orchestrator smoke script with a safe RUN_ID.</p>
-      <label>Run ID
-        <input id="run-id" placeholder="gemma-orchestrator-smoke-ui-YYYYMMDD-HHMMSS" />
-      </label>
-      <button data-run="smoke-train">Launch Smoke Train</button>
-      <p class="warning">Do not train on secrets, credentials, private raw chats, or stale task artifacts.</p>
+    <section id="jobs-view" class="view">
+      <section class="card">
+        <div class="card-title">
+          <h2>Jobs & Logs</h2>
+          <button id="refresh-jobs">Refresh jobs</button>
+        </div>
+        <div id="jobs"></div>
+        <pre class="log" id="job-log">Select a job to view its log.</pre>
+      </section>
     </section>
 
-    <section class="card span-2">
-      <div class="card-title">
-        <h2>Jobs & Logs</h2>
-        <button id="refresh-jobs">Refresh jobs</button>
-      </div>
-      <div id="jobs"></div>
-      <pre class="log" id="job-log">Select a job to view its log.</pre>
-    </section>
-
-    <section class="card span-2">
-      <div class="card-title">
-        <h2>Artifacts</h2>
-        <button id="artifact-up">Up</button>
-      </div>
-      <div class="tabs" id="artifact-tabs"></div>
-      <div class="path" id="artifact-path"></div>
-      <div id="artifacts"></div>
-      <pre class="preview" id="artifact-preview">Select a previewable text/log/json file.</pre>
+    <section id="artifacts-view" class="view">
+      <section class="card">
+        <div class="card-title">
+          <h2>Artifacts</h2>
+          <button id="artifact-up">Up</button>
+        </div>
+        <div class="tabs" id="artifact-tabs"></div>
+        <div class="path" id="artifact-path"></div>
+        <div id="artifacts"></div>
+        <pre class="preview" id="artifact-preview">Select a previewable text/log/json file.</pre>
+      </section>
     </section>
   </main>
 

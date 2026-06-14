@@ -28,6 +28,9 @@ REPO_ROOT = Path("/mnt/c/projects/ai-training").resolve()
 S_ROOT = Path("/mnt/s/AITraining")
 RUNS_ROOT = S_ROOT / "runs"
 CONTROL_ROOT = RUNS_ROOT / "control-panel"
+ARENA_ROOT = S_ROOT / "agent-arena"
+WORKTREES_ROOT = ARENA_ROOT / "worktrees"
+TRACE_ROOT = S_ROOT / "traces"
 STATIC_ROOT = REPO_ROOT / "control_panel" / "static"
 JOBS_JSON = CONTROL_ROOT / "jobs.json"
 HOST = os.environ.get("AI_TRAINING_UI_HOST", "127.0.0.1")
@@ -42,6 +45,8 @@ ARTIFACT_ROOTS = {
     "runs": RUNS_ROOT,
     "adapters": S_ROOT / "adapters",
     "merged-models": S_ROOT / "merged-models",
+    "agent-arena": ARENA_ROOT,
+    "traces": TRACE_ROOT,
 }
 
 COMMANDS: dict[str, dict[str, Any]] = {
@@ -71,6 +76,24 @@ COMMANDS: dict[str, dict[str, Any]] = {
         "timeout_seconds": 7200,
         "env_keys": {"RUN_ID"},
         "log_prefix": "smoke-train",
+    },
+    "trace-import-fable": {
+        "label": "Import Fable Phase 1 Traces",
+        "description": "Copy processed Fable trace artifacts into the AI Training trace store with a manifest.",
+        "argv": [str(REPO_ROOT / "scripts" / "trace" / "import_fable_phase1.py")],
+        "risk": "low",
+        "timeout_seconds": 900,
+        "env_keys": set(),
+        "log_prefix": "trace-import-fable",
+    },
+    "trace-write-sources": {
+        "label": "Write Recommended Trace Sources",
+        "description": "Write the current recommended public trace source registry for review and later normalization.",
+        "argv": [str(REPO_ROOT / "scripts" / "trace" / "write_recommended_sources.py")],
+        "risk": "low",
+        "timeout_seconds": 120,
+        "env_keys": set(),
+        "log_prefix": "trace-write-sources",
     },
 }
 
@@ -103,6 +126,10 @@ def ensure_dirs() -> None:
     CONTROL_ROOT.mkdir(parents=True, exist_ok=True)
     for root in ARTIFACT_ROOTS.values():
         root.mkdir(parents=True, exist_ok=True)
+    for child in ["tasks", "candidates", "reviews", "winners", "datasets", "evals", "worktrees"]:
+        (ARENA_ROOT / child).mkdir(parents=True, exist_ok=True)
+    for child in ["raw", "imports", "sanitized", "normalized", "metrics", "exports", "registry"]:
+        (TRACE_ROOT / child).mkdir(parents=True, exist_ok=True)
 
 
 def load_jobs() -> None:
@@ -336,10 +363,35 @@ def status_payload() -> dict[str, Any]:
         "gpu": gpu_status(),
         "latest_verify": latest_verify,
         "training_state": training_state_payload(),
+        "trace_lab": trace_lab_payload(),
         "jobs": jobs,
         "commands": public_commands(),
         "time": now_iso(),
     }
+
+
+def trace_common_module():
+    trace_scripts = REPO_ROOT / "scripts" / "trace"
+    if str(trace_scripts) not in sys.path:
+        sys.path.insert(0, str(trace_scripts))
+    import trace_common  # type: ignore[import-not-found]
+
+    return trace_common
+
+
+def trace_lab_payload() -> dict[str, Any]:
+    try:
+        module = trace_common_module()
+        return module.summarize_trace_store()
+    except Exception as exc:  # noqa: BLE001 - status payload should stay usable
+        return {"root": str(TRACE_ROOT), "error": repr(exc), "updated_at": now_iso()}
+
+
+def trace_sources_payload() -> list[dict[str, Any]]:
+    module = trace_common_module()
+    module.write_recommended_sources()
+    return module.PUBLIC_TRACE_SOURCES
+
 
 
 def public_commands() -> list[dict[str, Any]]:
@@ -378,6 +430,438 @@ def safe_env(command_id: str, body: dict[str, Any]) -> dict[str, str]:
     if unknown:
         raise ValueError("Unsupported env override(s): " + ", ".join(sorted(unknown)))
     return env
+
+
+def safe_slug(raw: str, prefix: str = "item") -> str:
+    """Return a filesystem-safe short slug for arena task/candidate IDs."""
+    base = re.sub(r"[^A-Za-z0-9._-]+", "-", (raw or "").strip()).strip(".-_").lower()
+    if not base:
+        base = prefix
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return f"{base[:48]}-{stamp}"
+
+
+def arena_task_path(task_id: str) -> Path:
+    if not SAFE_RUN_ID.match(task_id):
+        raise ValueError("Invalid task id")
+    return ARENA_ROOT / "tasks" / f"{task_id}.json"
+
+
+def arena_candidates_dir(task_id: str) -> Path:
+    if not SAFE_RUN_ID.match(task_id):
+        raise ValueError("Invalid task id")
+    return ARENA_ROOT / "candidates" / task_id
+
+
+def arena_candidate_path(task_id: str, candidate_id: str) -> Path:
+    if not SAFE_RUN_ID.match(candidate_id):
+        raise ValueError("Invalid candidate id")
+    return arena_candidates_dir(task_id) / f"{candidate_id}.json"
+
+
+def arena_read_json(path: Path) -> dict[str, Any]:
+    data = read_json(path)
+    return data if isinstance(data, dict) else {}
+
+
+def arena_list_tasks() -> list[dict[str, Any]]:
+    ensure_dirs()
+    tasks: list[dict[str, Any]] = []
+    for path in sorted((ARENA_ROOT / "tasks").glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        task = arena_read_json(path)
+        if not task:
+            continue
+        task_id = str(task.get("id") or path.stem)
+        candidate_dir = arena_candidates_dir(task_id)
+        candidate_count = len(list(candidate_dir.glob("*.json"))) if candidate_dir.exists() else 0
+        winner_path = ARENA_ROOT / "winners" / f"{task_id}.json"
+        tasks.append({**task, "candidate_count": candidate_count, "has_winner": winner_path.exists()})
+    return tasks[:100]
+
+
+def arena_get_task(task_id: str) -> dict[str, Any]:
+    task = arena_read_json(arena_task_path(task_id))
+    if not task:
+        raise FileNotFoundError("Unknown arena task")
+    candidate_dir = arena_candidates_dir(task_id)
+    candidates = []
+    if candidate_dir.exists():
+        for path in sorted(candidate_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+            candidate = arena_read_json(path)
+            if candidate:
+                candidates.append(candidate)
+    review = read_json(ARENA_ROOT / "reviews" / f"{task_id}.json")
+    winner = read_json(ARENA_ROOT / "winners" / f"{task_id}.json")
+    return {"task": task, "candidates": candidates, "review": review, "winner": winner}
+
+
+def arena_create_task(body: dict[str, Any]) -> dict[str, Any]:
+    ensure_dirs()
+    title = str(body.get("title") or "").strip()
+    prompt = str(body.get("prompt") or "").strip()
+    if not title or not prompt:
+        raise ValueError("Task title and prompt are required")
+    task_id = safe_slug(title, "task")
+    task = {
+        "id": task_id,
+        "title": title[:180],
+        "prompt": prompt[:20000],
+        "acceptance_criteria": str(body.get("acceptanceCriteria") or "").strip()[:12000],
+        "repo_path": str(body.get("repoPath") or REPO_ROOT).strip()[:500],
+        "status": "collecting_candidates",
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+        "promotion_gate": "Candidate must pass tests/review and needs manual approval before merge or training promotion.",
+    }
+    arena_task_path(task_id).write_text(json.dumps(task, indent=2), encoding="utf-8")
+    return task
+
+
+def arena_score_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
+    diff = str(candidate.get("diff") or "")
+    test_log = str(candidate.get("test_log") or "")
+    review_notes = str(candidate.get("review_notes") or "")
+    combined = "\n".join([diff, test_log, review_notes]).lower()
+    added = sum(1 for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++"))
+    removed = sum(1 for line in diff.splitlines() if line.startswith("-") and not line.startswith("---"))
+    pass_terms = ["passed", "all tests pass", "ok", "success", "successful", "0 failed", "returncode: 0"]
+    fail_patterns = [r"(?<!0 )failed", r"traceback", r"error:", r"exception", r"[1-9][0-9]* failed", r"leaked secret", r"exposed token"]
+    score = 50
+    reasons: list[str] = []
+    if any(term in combined for term in pass_terms):
+        score += 20
+        reasons.append("Evidence suggests tests/checks passed")
+    if any(re.search(pattern, combined) for pattern in fail_patterns):
+        score -= 30
+        reasons.append("Failure/security keywords found in logs or review")
+    if diff.strip():
+        score += 10
+        reasons.append("Candidate includes a concrete diff")
+    if added + removed > 700:
+        score -= 10
+        reasons.append("Large diff: review carefully")
+    if not test_log.strip():
+        score -= 10
+        reasons.append("No test log supplied")
+    score = max(0, min(100, score))
+    if not reasons:
+        reasons.append("Insufficient evidence; manual review required")
+    return {"score": score, "added_lines": added, "removed_lines": removed, "reasons": reasons}
+
+
+def arena_add_candidate(task_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    task_path = arena_task_path(task_id)
+    if not task_path.exists():
+        raise FileNotFoundError("Unknown arena task")
+    label = str(body.get("label") or "Candidate").strip()[:120]
+    candidate_id = safe_slug(label, "candidate")
+    candidate: dict[str, Any] = {
+        "id": candidate_id,
+        "task_id": task_id,
+        "label": label,
+        "summary": str(body.get("summary") or "").strip()[:4000],
+        "diff": str(body.get("diff") or "").strip()[:120000],
+        "test_log": str(body.get("testLog") or "").strip()[:50000],
+        "review_notes": str(body.get("reviewNotes") or "").strip()[:20000],
+        "worker": str(body.get("worker") or "manual").strip()[:80],
+        "worktree_path": str(body.get("worktreePath") or "").strip()[:500],
+        "branch": str(body.get("branch") or "").strip()[:180],
+        "agent_log_path": str(body.get("agentLogPath") or "").strip()[:500],
+        "test_command": str(body.get("testCommand") or "").strip()[:500],
+        "created_at": now_iso(),
+    }
+    candidate["scorecard"] = arena_score_candidate(candidate)
+    path = arena_candidate_path(task_id, candidate_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(candidate, indent=2), encoding="utf-8")
+    task = arena_read_json(task_path)
+    task["updated_at"] = now_iso()
+    task["status"] = "review_candidates"
+    task_path.write_text(json.dumps(task, indent=2), encoding="utf-8")
+    return candidate
+
+
+def arena_score_task(task_id: str) -> dict[str, Any]:
+    payload = arena_get_task(task_id)
+    candidates = payload["candidates"]
+    scored = []
+    for candidate in candidates:
+        candidate["scorecard"] = arena_score_candidate(candidate)
+        arena_candidate_path(task_id, candidate["id"]).write_text(json.dumps(candidate, indent=2), encoding="utf-8")
+        scored.append(candidate)
+    scored.sort(key=lambda item: item.get("scorecard", {}).get("score", 0), reverse=True)
+    review = {
+        "task_id": task_id,
+        "created_at": now_iso(),
+        "candidate_count": len(scored),
+        "ranking": [
+            {"id": c["id"], "label": c.get("label"), "score": c.get("scorecard", {}).get("score"), "reasons": c.get("scorecard", {}).get("reasons", [])}
+            for c in scored
+        ],
+        "recommendation": "Select a winner only after manual review of the top diff and test log.",
+    }
+    (ARENA_ROOT / "reviews" / f"{task_id}.json").write_text(json.dumps(review, indent=2), encoding="utf-8")
+    return review
+
+
+def arena_select_winner(task_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    candidate_id = str(body.get("candidateId") or "").strip()
+    if not candidate_id:
+        raise ValueError("candidateId is required")
+    task = arena_get_task(task_id)["task"]
+    candidate = arena_read_json(arena_candidate_path(task_id, candidate_id))
+    if not candidate:
+        raise FileNotFoundError("Unknown candidate")
+    winner = {
+        "task_id": task_id,
+        "candidate_id": candidate_id,
+        "selected_at": now_iso(),
+        "manual_note": str(body.get("note") or "").strip()[:4000],
+        "task": task,
+        "winner": candidate,
+        "promotion_status": "manual_gate_required",
+    }
+    (ARENA_ROOT / "winners" / f"{task_id}.json").write_text(json.dumps(winner, indent=2), encoding="utf-8")
+    dataset_path = ARENA_ROOT / "datasets" / "code-edit-preference.jsonl"
+    candidates = arena_get_task(task_id)["candidates"]
+    losers = [c for c in candidates if c.get("id") != candidate_id]
+    with dataset_path.open("a", encoding="utf-8") as fh:
+        if losers:
+            for loser in losers:
+                fh.write(json.dumps({"task": task, "chosen": candidate, "rejected": loser, "selected_at": winner["selected_at"]}) + "\n")
+        else:
+            fh.write(json.dumps({"task": task, "chosen": candidate, "rejected": None, "selected_at": winner["selected_at"]}) + "\n")
+    task_path = arena_task_path(task_id)
+    task["status"] = "winner_selected_manual_gate"
+    task["updated_at"] = now_iso()
+    task_path.write_text(json.dumps(task, indent=2), encoding="utf-8")
+    return {**winner, "dataset_path": str(dataset_path)}
+
+
+def run_text_command(argv: list[str], cwd: Path, timeout: int = 1200) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, cwd=str(cwd), text=True, capture_output=True, timeout=timeout)
+
+
+def resolve_repo_path(raw: str) -> Path:
+    repo = Path(raw or REPO_ROOT).expanduser().resolve()
+    allowed_roots = [Path("/mnt/c/projects").resolve(), Path("/mnt/s/AITraining").resolve()]
+    if not any(repo == root or root in repo.parents for root in allowed_roots):
+        raise ValueError("Repo path must be under /mnt/c/projects or /mnt/s/AITraining")
+    proc = run_text_command(["git", "rev-parse", "--show-toplevel"], repo, timeout=20)
+    if proc.returncode != 0:
+        raise ValueError(f"Repo path is not inside a git repository: {proc.stderr.strip()}")
+    return Path(proc.stdout.strip()).resolve()
+
+
+def shellish_command(raw: str) -> list[str]:
+    return ["bash", "-lc", raw]
+
+
+def candidate_agent_command(worker: str, worktree: Path, prompt: str) -> list[str]:
+    if worker == "scripted-smoke":
+        quoted = json.dumps(prompt)
+        return shellish_command(
+            "python3 - <<'PY'\n"
+            "from pathlib import Path\n"
+            f"prompt = {quoted}\n"
+            "Path('ARENA_CANDIDATE_NOTES.md').write_text('# Arena scripted candidate\\n\\n' + prompt + '\\n', encoding='utf-8')\n"
+            "print('scripted candidate wrote ARENA_CANDIDATE_NOTES.md')\n"
+            "PY"
+        )
+    if worker == "codex":
+        return ["codex", "exec", "-C", str(worktree), "-s", "workspace-write", "-a", "never", prompt]
+    if worker == "claude":
+        return [
+            "claude",
+            "-p",
+            "--permission-mode",
+            "dontAsk",
+            "--tools",
+            "Read,Write,Edit,MultiEdit,Bash",
+            "--max-budget-usd",
+            "1",
+            prompt,
+        ]
+    raise ValueError("Unsupported worker. Use scripted-smoke, codex, or claude.")
+
+
+def build_candidate_prompt(task: dict[str, Any], worker_label: str) -> str:
+    return "\n".join(
+        [
+            "You are running as a candidate implementation worker inside an isolated git worktree.",
+            "Make the smallest safe code change that satisfies the task. Do not commit, push, install global packages, or touch secrets.",
+            "If tests are needed and available, run focused tests and summarize the result.",
+            f"Candidate label: {worker_label}",
+            f"Task title: {task.get('title')}",
+            "Task prompt:",
+            str(task.get("prompt") or ""),
+            "Acceptance criteria:",
+            str(task.get("acceptance_criteria") or ""),
+            "Return a concise summary of files changed, tests run, and remaining risks.",
+        ]
+    )
+
+
+def append_log(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", errors="replace") as fh:
+        fh.write(text)
+        if not text.endswith("\n"):
+            fh.write("\n")
+
+
+def git_output(repo: Path, args: list[str], timeout: int = 120) -> str:
+    proc = run_text_command(["git", *args], repo, timeout=timeout)
+    return (proc.stdout + proc.stderr).strip()
+
+
+def arena_start_candidate_batch(task_id: str, body: dict[str, Any]) -> Job:
+    payload = arena_get_task(task_id)
+    task = payload["task"]
+    repo = resolve_repo_path(str(body.get("repoPath") or task.get("repo_path") or REPO_ROOT))
+    worker = str(body.get("worker") or "scripted-smoke").strip()
+    count = int(body.get("count") or 3)
+    if count < 1 or count > 3:
+        raise ValueError("Candidate count must be between 1 and 3")
+    test_command = str(body.get("testCommand") or "").strip()[:500]
+    run_id = safe_slug(f"batch-{task_id}", "batch")
+    log_path = ARENA_ROOT / "runs" / f"{run_id}.log"
+    job_id = f"candidate-batch-{run_id}-{uuid.uuid4().hex[:6]}"
+    job = Job(
+        id=job_id,
+        command="candidate-batch",
+        label=f"Candidate Batch: {task.get('title')}",
+        status="running",
+        argv=["internal:candidate-batch", task_id, worker],
+        pid=None,
+        started_at=now_iso(),
+        ended_at=None,
+        returncode=None,
+        log_path=str(log_path),
+        risk="medium",
+        env={"TASK_ID": task_id, "WORKER": worker, "COUNT": str(count)},
+    )
+    with _lock:
+        running = [j for j in _jobs.values() if j.status == "running" and j.command == "candidate-batch"]
+        if running:
+            raise RuntimeError(f"Another candidate batch is already running: {running[0].id}")
+        _jobs[job_id] = job
+        save_jobs()
+
+    def worker_thread() -> None:
+        rc = 0
+        try:
+            append_log(log_path, f"[{now_iso()}] candidate batch start task={task_id} repo={repo} worker={worker} count={count}")
+            base_ref = git_output(repo, ["rev-parse", "HEAD"])
+            for index in range(1, count + 1):
+                label = f"{worker}-{index}"
+                branch = f"arena/{task_id[:36]}/{label}-{datetime.now().strftime('%H%M%S')}"
+                worktree = WORKTREES_ROOT / task_id / label
+                append_log(log_path, f"\n[{now_iso()}] creating worktree {worktree} at {base_ref}")
+                if worktree.exists():
+                    remove_proc = run_text_command(["git", "worktree", "remove", "--force", str(worktree)], repo, timeout=120)
+                    append_log(log_path, remove_proc.stdout + remove_proc.stderr)
+                    if worktree.exists():
+                        shutil.rmtree(worktree)
+                run_text_command(["git", "worktree", "prune"], repo, timeout=120)
+                proc = run_text_command(["git", "worktree", "add", "-B", branch, str(worktree), base_ref], repo, timeout=120)
+                append_log(log_path, proc.stdout + proc.stderr)
+                if proc.returncode != 0:
+                    rc = 1
+                    continue
+                prompt = build_candidate_prompt(task, label)
+                agent_log = ARENA_ROOT / "runs" / f"{run_id}-{label}.log"
+                command = candidate_agent_command(worker, worktree, prompt)
+                append_log(log_path, f"[{now_iso()}] running {label}: {' '.join(command[:4])} ...")
+                try:
+                    proc = run_text_command(command, worktree, timeout=2400)
+                    agent_text = proc.stdout + proc.stderr
+                    append_log(agent_log, agent_text or "(agent produced no output)")
+                    append_log(log_path, f"[{now_iso()}] {label} agent rc={proc.returncode} log={agent_log}")
+                    if proc.returncode != 0:
+                        rc = 1
+                except subprocess.TimeoutExpired as exc:
+                    agent_text = f"TIMEOUT after {exc.timeout}s\n{exc.stdout or ''}\n{exc.stderr or ''}"
+                    append_log(agent_log, agent_text)
+                    append_log(log_path, f"[{now_iso()}] {label} timed out")
+                    rc = 1
+                test_log = ""
+                if test_command:
+                    append_log(log_path, f"[{now_iso()}] running tests for {label}: {test_command}")
+                    try:
+                        test_proc = run_text_command(shellish_command(test_command), worktree, timeout=1200)
+                        test_log = f"[test returncode: {test_proc.returncode}]\n" + (test_proc.stdout + test_proc.stderr)
+                        if test_proc.returncode == 0 and not (test_proc.stdout or test_proc.stderr):
+                            test_log += "test command completed successfully\n"
+                        append_log(agent_log, "\n--- TEST LOG ---\n" + (test_log or "(empty test output)"))
+                        if test_proc.returncode != 0:
+                            rc = 1
+                    except subprocess.TimeoutExpired as exc:
+                        test_log = f"TEST TIMEOUT after {exc.timeout}s\n{exc.stdout or ''}\n{exc.stderr or ''}"
+                        append_log(agent_log, "\n--- TEST LOG ---\n" + test_log)
+                        rc = 1
+                run_text_command(["git", "add", "-N", "."], worktree, timeout=120)
+                diff = git_output(worktree, ["diff", "--no-ext-diff"], timeout=120)
+                status = git_output(worktree, ["status", "--short"], timeout=120)
+                summary = f"Automated {worker} candidate. Agent log: {agent_log}. Worktree: {worktree}. Git status:\n{status or '(clean)'}"
+                candidate_record = arena_add_candidate(
+                    task_id,
+                    {
+                        "label": label,
+                        "summary": summary,
+                        "diff": diff,
+                        "testLog": test_log,
+                        "reviewNotes": f"Candidate batch worker={worker}; branch={branch}; base={base_ref}; status={status or '(clean)'}",
+                        "worker": worker,
+                        "worktreePath": str(worktree),
+                        "branch": branch,
+                        "agentLogPath": str(agent_log),
+                        "testCommand": test_command,
+                    },
+                )
+                try:
+                    trace_common_module().append_trace_event(
+                        worker,
+                        {
+                            "kind": "arena_candidate_attempt",
+                            "task_id": task_id,
+                            "candidate": candidate_record,
+                            "branch": branch,
+                            "base_ref": base_ref,
+                            "agent_returncode": proc.returncode,
+                            "test_command": test_command,
+                            "git_status": status,
+                        },
+                        run_id=run_id,
+                    )
+                except Exception as exc:  # noqa: BLE001 - trace capture must not break arena runs
+                    append_log(log_path, f"[{now_iso()}] trace capture warning for {label}: {repr(exc)}")
+            review = arena_score_task(task_id)
+            append_log(log_path, f"[{now_iso()}] wrote review ranking with {review['candidate_count']} candidates")
+        except Exception as exc:  # noqa: BLE001 - record batch failure
+            rc = 1
+            append_log(log_path, f"[{now_iso()}] ERROR: {repr(exc)}")
+        finally:
+            task_path = arena_task_path(task_id)
+            task_latest = arena_read_json(task_path)
+            if task_latest:
+                task_latest["status"] = "review_candidates"
+                task_latest["updated_at"] = now_iso()
+                task_path.write_text(json.dumps(task_latest, indent=2), encoding="utf-8")
+            with _lock:
+                saved = _jobs.get(job_id)
+                if saved:
+                    saved.status = "completed" if rc == 0 else "failed"
+                    saved.returncode = rc
+                    saved.ended_at = now_iso()
+                save_jobs()
+            append_log(log_path, f"[{now_iso()}] candidate batch finished rc={rc}")
+
+    task["status"] = "batch_running"
+    task["updated_at"] = now_iso()
+    arena_task_path(task_id).write_text(json.dumps(task, indent=2), encoding="utf-8")
+    threading.Thread(target=worker_thread, daemon=True).start()
+    return job
 
 
 def run_job(command_id: str, body: dict[str, Any]) -> Job:
@@ -594,6 +1078,10 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, status_payload())
             if path == "/api/commands":
                 return json_response(self, public_commands())
+            if path == "/api/traces/summary":
+                return json_response(self, trace_lab_payload())
+            if path == "/api/traces/sources":
+                return json_response(self, trace_sources_payload())
             if path == "/api/jobs":
                 return json_response(self, list_jobs())
             if path.startswith("/api/jobs/") and path.endswith("/log"):
@@ -611,6 +1099,11 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, asdict(job))
             if path == "/api/artifacts/roots":
                 return json_response(self, {name: str(root) for name, root in ARTIFACT_ROOTS.items()})
+            if path == "/api/arena/tasks":
+                return json_response(self, arena_list_tasks())
+            if path.startswith("/api/arena/tasks/"):
+                task_id = path.split("/")[4]
+                return json_response(self, arena_get_task(task_id))
             if path == "/api/artifacts":
                 return json_response(self, list_artifacts(qs.get("root", ["runs"])[0], qs.get("path", [""])[0]))
             if path == "/api/artifacts/preview":
@@ -631,10 +1124,28 @@ class Handler(BaseHTTPRequestHandler):
                     return error(self, 400, "Setup requires confirm=true because it installs/updates packages")
                 job = run_job(command_id, body)
                 return json_response(self, asdict(job), 201)
+            if parsed.path == "/api/traces/import-fable":
+                return json_response(self, asdict(run_job("trace-import-fable", body)), 201)
+            if parsed.path == "/api/traces/write-sources":
+                return json_response(self, asdict(run_job("trace-write-sources", body)), 201)
             if parsed.path.startswith("/api/jobs/") and parsed.path.endswith("/cancel"):
                 job_id = parsed.path.split("/")[3]
                 job = cancel_job(job_id)
                 return json_response(self, asdict(job))
+            if parsed.path == "/api/arena/tasks":
+                return json_response(self, arena_create_task(body), 201)
+            if parsed.path.startswith("/api/arena/tasks/") and parsed.path.endswith("/batch"):
+                task_id = parsed.path.split("/")[4]
+                return json_response(self, asdict(arena_start_candidate_batch(task_id, body)), 201)
+            if parsed.path.startswith("/api/arena/tasks/") and parsed.path.endswith("/candidates"):
+                task_id = parsed.path.split("/")[4]
+                return json_response(self, arena_add_candidate(task_id, body), 201)
+            if parsed.path.startswith("/api/arena/tasks/") and parsed.path.endswith("/score"):
+                task_id = parsed.path.split("/")[4]
+                return json_response(self, arena_score_task(task_id))
+            if parsed.path.startswith("/api/arena/tasks/") and parsed.path.endswith("/winner"):
+                task_id = parsed.path.split("/")[4]
+                return json_response(self, arena_select_winner(task_id, body))
             return error(self, 404, "Not found")
         except ValueError as exc:
             return error(self, 400, str(exc))

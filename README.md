@@ -16,6 +16,23 @@ Hot training data and environments live on the fast S: SSD:
 - `S:\AITraining\runs` / `/mnt/s/AITraining/runs` — training outputs/logs
 - `S:\AITraining\adapters` / `/mnt/s/AITraining/adapters` — LoRA adapters
 - `S:\AITraining\merged-models` / `/mnt/s/AITraining/merged-models` — merged/exported models
+- `S:\AITraining\traces` / `/mnt/s/AITraining/traces` — agent trace capture, imports, source registry, and training-data prep artifacts
+
+## Agent Trace Lab
+
+The dashboard includes a Trace Lab tab for Fable-like agent training data:
+
+- automatic sidecar trace capture for Agent Arena candidate runs under `S:\AITraining\traces\raw`
+- Fable Phase 1 import from `/mnt/c/projects/fable-trace-lora` into `S:\AITraining\traces\imports\fable-claude-code`
+- recommended public trace source registry at `S:\AITraining\traces\registry\recommended_sources.json`
+- status/metrics surfaced through `/api/traces/summary` and the Trace Lab UI
+
+Useful commands:
+
+```bash
+python3 /mnt/c/projects/ai-training/scripts/trace/import_fable_phase1.py
+python3 /mnt/c/projects/ai-training/scripts/trace/write_recommended_sources.py
+```
 
 ## Environment
 
@@ -44,7 +61,15 @@ Commands:
 - `verify` — check GPU, torch, and Unsloth imports
 - `shell` — open a Windows Terminal tab into WSL with the env activated
 
-The control panel is intentionally thin and uses the existing CLI scripts as the source of truth. It provides GPU/environment status, guarded setup/verify buttons, smoke-training launch, job logs, and a read-only artifact browser for `S:\AITraining`.
+The control panel is now arena-first and uses existing CLI scripts as the source of truth for setup/training. It provides:
+
+- an Agent Arena for self-improvement tasks, candidate patch capture, deterministic scoring, manual winner selection, and preference JSONL export under `S:\AITraining\agent-arena`
+- a guarded Candidate Batch Runner that creates isolated git worktrees, runs scripted-smoke/Codex/Claude workers, captures diffs/test logs, and imports candidates back into the Arena
+- GPU/environment status
+- guarded setup/verify buttons
+- smoke-training launch
+- job logs
+- a read-only artifact browser for `S:\AITraining`
 
 Manual launch from WSL:
 
@@ -62,3 +87,36 @@ Start small. Recommended first LoRA adapter:
 - goal: George tone/style adapter or ClipLab edit-decision advisor
 
 Do not train on secrets, credentials, raw private chat logs, or stale task artifacts.
+
+## ClipLab Edit Director LoRA
+
+V0.1 trains on ClipLab AI Review accept/reject feedback for edit-director decisions. It does not train on raw video, and unlabeled local artifacts are parked in `unlabeled_candidates.jsonl` until a human labels them.
+
+Dataset curation:
+
+```bash
+python3 /mnt/c/projects/ai-training/scripts/curate_cliplab_edit_director_v01.py
+```
+
+Local smoke train after labels exist:
+
+```bash
+python3 /mnt/c/projects/ai-training/scripts/train_cliplab_edit_director.py \
+  --smoke-model \
+  --max-train-rows 20 \
+  --max-steps 20
+```
+
+Compare an adapter against the current pipeline baseline:
+
+```bash
+python3 /mnt/c/projects/ai-training/scripts/compare_cliplab_edit_director.py \
+  --adapter-dir /mnt/s/AITraining/adapters/<run-id>/adapter
+```
+
+Export a promoted adapter as a merged GGUF:
+
+```bash
+python3 /mnt/c/projects/ai-training/scripts/export_cliplab_edit_director_gguf.py \
+  --adapter-dir /mnt/s/AITraining/adapters/<run-id>/adapter
+```
