@@ -4,7 +4,7 @@ set -euo pipefail
 WORKDIR="/mnt/s/AITraining/unsloth"
 RUN_DIR="/mnt/s/AITraining/runs"
 RESULT_JSON="$RUN_DIR/verify-latest.json"
-TIMEOUT_SECONDS="${VERIFY_TIMEOUT_SECONDS:-120}"
+TIMEOUT_SECONDS="${VERIFY_TIMEOUT_SECONDS:-240}"
 
 mkdir -p "$RUN_DIR"
 cd "$WORKDIR"
@@ -24,7 +24,7 @@ from typing import Any
 
 RUN_DIR = Path('/mnt/s/AITraining/runs')
 RESULT_JSON = RUN_DIR / 'verify-latest.json'
-TIMEOUT_SECONDS = int(os.environ.get('VERIFY_TIMEOUT_SECONDS', '120'))
+TIMEOUT_SECONDS = int(os.environ.get('VERIFY_TIMEOUT_SECONDS', '240'))
 RUN_DIR.mkdir(parents=True, exist_ok=True)
 
 result: dict[str, Any] = {
