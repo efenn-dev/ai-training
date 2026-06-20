@@ -114,6 +114,17 @@ python3 /mnt/c/projects/ai-training/scripts/compare_cliplab_edit_director.py \
   --adapter-dir /mnt/s/AITraining/adapters/<run-id>/adapter
 ```
 
+Training now runs the comparison gate by default after saving an adapter. The gate writes `comparison-report.md`/`.json`, stages a Mission Control Automation Review artifact, and only recommends `shadow_mode_candidate` or `do_not_promote`. Review approval authorizes shadow-mode only; live production routing/editing requires a separate integration task. Use `--skip-eval-gate` only for environment/debug smoke work where no adapter promotion is possible.
+
+For the Mission Control general-ops router lane, use:
+
+```bash
+python3 /mnt/c/projects/ai-training/scripts/compare_gemma_orchestrator_adapter.py \
+  --adapter-dir /mnt/s/AITraining/adapters/<run-id>/adapter
+```
+
+That report includes strict schema validity, route/task accuracy, manual-gate misses, fake-verification/hallucination checks, and the same Automation Review shadow-mode-only gate.
+
 Export a promoted adapter as a merged GGUF:
 
 ```bash

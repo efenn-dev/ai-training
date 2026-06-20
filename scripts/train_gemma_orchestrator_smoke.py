@@ -1,5 +1,5 @@
 import unsloth
-import json, os, time
+import json, os, subprocess, sys, time
 from pathlib import Path
 from datasets import load_dataset
 from trl import SFTTrainer, SFTConfig
@@ -11,6 +11,7 @@ MODEL_NAME = os.environ.get('BASE_MODEL', 'unsloth/gemma-3-1b-it-unsloth-bnb-4bi
 RUN_ID = os.environ.get('RUN_ID') or 'gemma-orchestrator-smoke-' + time.strftime('%Y%m%d-%H%M%S')
 OUT_DIR = Path(os.environ.get('OUT_DIR', f'/mnt/s/AITraining/adapters/{RUN_ID}'))
 MAX_STEPS = int(os.environ.get('MAX_STEPS', '8'))
+RUN_EVAL_GATE = os.environ.get('RUN_EVAL_GATE', '1').lower() not in {'0', 'false', 'no'}
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 def validate_dataset(path: Path):
@@ -47,5 +48,22 @@ trainer = SFTTrainer(model=model, processing_class=tokenizer, train_dataset=trai
 trainer.train()
 model.save_pretrained(str(OUT_DIR/'adapter'))
 tokenizer.save_pretrained(str(OUT_DIR/'adapter'))
-(OUT_DIR/'RUN_SUMMARY.json').write_text(json.dumps({'model':MODEL_NAME,'dataset':str(DATASET_DIR),'max_steps':MAX_STEPS,'adapter':str(OUT_DIR/'adapter')}, indent=2))
+summary = {'model':MODEL_NAME,'dataset':str(DATASET_DIR),'max_steps':MAX_STEPS,'adapter':str(OUT_DIR/'adapter')}
+if RUN_EVAL_GATE:
+    gate_run_dir = OUT_DIR / 'eval-gate'
+    cmd = [
+        sys.executable,
+        str(Path(__file__).with_name('compare_gemma_orchestrator_adapter.py')),
+        '--dataset-dir',
+        str(DATASET_DIR),
+        '--base-model',
+        MODEL_NAME,
+        '--adapter-dir',
+        str(OUT_DIR/'adapter'),
+        '--run-dir',
+        str(gate_run_dir),
+    ]
+    subprocess.run(cmd, check=True)
+    summary['eval_gate_report'] = str(gate_run_dir / 'comparison-report.md')
+(OUT_DIR/'RUN_SUMMARY.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
 print(json.dumps({'event':'done','adapter':str(OUT_DIR/'adapter')}, indent=2))
