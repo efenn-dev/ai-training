@@ -141,3 +141,7 @@ python3 /mnt/c/projects/ai-training-lab/unsloth/scripts/export_cliplab_edit_dire
 Use `scripts/generate_frontier_review_packet.py` when a frontier reviewer needs a small packet instead of raw logs/transcripts. It supports `gaming-pipeline` and `general-ops-router` lanes and writes paired Markdown/JSON artifacts with queue counts, changed examples, low-confidence drafts, disagreements, errors, eval metrics, and raw artifact pointers.
 
 See `docs/frontier-review-packets.md` for usage and the checklist for when frontier review is actually required.
+
+## License
+
+MIT. See [LICENSE](LICENSE). Copyright (c) 2026 Emmitt Fennessey.
