@@ -1,0 +1,122 @@
+{
+  "policy_version": "ai-training-local-frontier-router-v0.1",
+  "production_routing_enabled": false,
+  "shadow_mode_default": true,
+  "decision_modes": [
+    "no_model_script",
+    "local_model_draft",
+    "frontier_required",
+    "human_required"
+  ],
+  "local_model_endpoint_candidates": [
+    {
+      "name": "Local Qwen3-Coder 30B A3B llama.cpp",
+      "endpoint": "http://127.0.0.1:8012/v1/chat/completions",
+      "model": "qwen3-coder-local",
+      "enabled": true,
+      "allowed_modes": ["local_model_draft"],
+      "evidence": "Best prior local coding candidate, but endpoint must pass fresh live eval before tiny-code routing. Safe for draft/triage smoke testing when running."
+    },
+    {
+      "name": "Ollama Qwen3.5 9B",
+      "endpoint": "http://127.0.0.1:11434/v1/chat/completions",
+      "model": "qwen3.5:9b",
+      "enabled": false,
+      "allowed_modes": ["local_model_draft"],
+      "evidence": "Available from Ollama, but 2026-06-22 smoke showed it spent the response budget in reasoning with empty final content. Disabled until thinking/output mode is fixed."
+    },
+    {
+      "name": "Ollama Qwen3-Coder 30B",
+      "endpoint": "http://127.0.0.1:11434/v1/chat/completions",
+      "model": "qwen3-coder:30b",
+      "enabled": false,
+      "allowed_modes": ["local_model_draft"],
+      "evidence": "Available from Ollama, but 2026-06-22 smoke returned punctuation noise and zero token accounting. Disabled until model/template health is fixed."
+    }
+  ],
+  "local_quality_gate": {
+    "min_answer_chars": 40,
+    "min_answer_chars_by_task": {
+      "classification": 4,
+      "draft_label": 4,
+      "missing_field_detection": 4
+    },
+    "min_confidence": 0.45,
+    "require_strict_json": true
+  },
+  "no_model_script_task_types": [
+    "schema_validation",
+    "manifest_counts",
+    "dataset_counts",
+    "eval_metric_aggregation",
+    "packet_generation",
+    "freshness_check"
+  ],
+  "local_model_draft_task_types": [
+    "summarization",
+    "draft_label",
+    "route_draft",
+    "status_packet",
+    "low_risk_inspection",
+    "missing_field_detection",
+    "classification"
+  ],
+  "frontier_required_task_types": [
+    "risky_edit",
+    "training_promotion_decision",
+    "ambiguous_product_decision",
+    "hard_debugging",
+    "config_change",
+    "routing_change",
+    "secrets_or_credentials",
+    "final_review",
+    "multi_file_code_change"
+  ],
+  "human_required_task_types": [
+    "subjective_label_acceptance",
+    "adapter_approval",
+    "production_enablement",
+    "holdout_split_change",
+    "manual_safety_gate"
+  ],
+  "frontier_required_patterns": [
+    "secret", "credential", "token", "api key", ".env",
+    "production", "deploy", "publish", "go live",
+    "approve adapter", "promotion", "launch training", "start training", "train adapter", "training run", "fine-tune",
+    "routing change", "config", "hard debug", "ambiguous",
+    "multi-file", "destructive", "overwrite holdout"
+  ],
+  "human_required_patterns": [
+    "human review", "operator approval", "manual acceptance",
+    "subjective", "taste", "approve", "reviewed", "holdout"
+  ],
+  "local_forbidden_actions": [
+    "set status=reviewed",
+    "approve adapters",
+    "train or launch training",
+    "change production routing",
+    "modify secrets/config",
+    "overwrite holdout splits",
+    "claim tests passed without real execution"
+  ],
+  "local_required_outputs": [
+    "strict JSON or compact Markdown packet",
+    "model id and endpoint when a model is used",
+    "confidence or uncertainty field",
+    "source/provenance pointers",
+    "escalation reason when confidence is low or policy blocks local execution"
+  ],
+  "promotion_thresholds": {
+    "tiny_coding_verdict": "local_coding_with_review",
+    "required_tool_recall_min": 0.75,
+    "verification_honesty_min": 0.70,
+    "hallucinated_tool_calls_max": 0,
+    "wsl_path_correctness_min": 0.90
+  },
+  "shadow_log_default": "/mnt/s/AITraining/router-shadow/decisions.jsonl",
+  "local_first_telemetry_default": "/mnt/s/AITraining/traces/metrics/local-first-telemetry.jsonl",
+  "frontier_cost_estimates_usd_per_1k_tokens": {
+    "default_input": 0.003,
+    "default_output": 0.015
+  }
+}

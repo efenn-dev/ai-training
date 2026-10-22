@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -57,6 +58,14 @@ PUBLIC_TRACE_SOURCES = [
         "priority": "medium",
     },
     {
+        "id": "karpathy/autoresearch",
+        "url": "https://github.com/karpathy/autoresearch",
+        "kind": "training-system-source",
+        "license": "mit",
+        "why": "Open system for learning-style experimentation and training research workflows.",
+        "priority": "review-before-production",
+    },
+    {
         "id": "clem/hf-coding-tools-traces",
         "url": "https://huggingface.co/datasets/clem/hf-coding-tools-traces",
         "kind": "agent-traces",
@@ -81,6 +90,26 @@ PUBLIC_TRACE_SOURCES = [
         "priority": "later-scale",
     },
 ]
+
+AUTORESEARCH_SANITIZE_EXTENSIONS = {
+    ".jsonl",
+    ".json",
+    ".ipynb",
+    ".md",
+    ".txt",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".cfg",
+    ".ini",
+    ".py",
+    ".sh",
+    ".ps1",
+    ".bat",
+    ".rst",
+    ".log",
+    ".csv",
+}
 
 
 def now_iso() -> str:
@@ -170,15 +199,37 @@ def count_jsonl(path: Path) -> int:
         return sum(1 for line in handle if line.strip())
 
 
+def run_command(cmd: list[str], cwd: Path | None = None, timeout_sec: int = 180) -> str:
+    proc = subprocess.run(
+        cmd,
+        cwd=str(cwd) if cwd is not None else None,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=timeout_sec,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"Command failed: {' '.join(cmd)} ({proc.returncode}) {proc.stderr.strip()}")
+    return proc.stdout.strip()
+
+
 def summarize_trace_store() -> dict[str, Any]:
     ensure_trace_dirs()
     raw_files = list((TRACE_ROOT / "raw").rglob("*.jsonl"))
     import_manifests = list((TRACE_ROOT / "imports").rglob("IMPORT_MANIFEST.json"))
     normalized_files = list((TRACE_ROOT / "normalized").rglob("*.jsonl"))
     sanitized_files = list((TRACE_ROOT / "sanitized").rglob("*.jsonl"))
+    sanitized_manifests = list((TRACE_ROOT / "sanitized").rglob("SANITIZED_MANIFEST.json"))
     raw_events = sum(count_jsonl(path) for path in raw_files)
     normalized_rows = sum(count_jsonl(path) for path in normalized_files)
     sanitized_rows = sum(count_jsonl(path) for path in sanitized_files)
+    sanitized_imports = []
+    for manifest_path in sorted(sanitized_manifests, key=lambda p: p.stat().st_mtime, reverse=True)[:20]:
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            manifest = {"error": repr(exc)}
+        sanitized_imports.append({"path": str(manifest_path), **manifest})
     imports = []
     for manifest_path in sorted(import_manifests, key=lambda p: p.stat().st_mtime, reverse=True)[:20]:
         try:
@@ -201,6 +252,9 @@ def summarize_trace_store() -> dict[str, Any]:
         "imports": imports,
         "sanitized_files": len(sanitized_files),
         "sanitized_rows": sanitized_rows,
+        "sanitized_pack_count": len(sanitized_manifests),
+        "sanitized_review_files": sum(int(item.get("file_count") or 0) for item in sanitized_imports),
+        "sanitized_imports": sanitized_imports,
         "normalized_files": len(normalized_files),
         "normalized_rows": normalized_rows,
         "recommended_sources": sources or PUBLIC_TRACE_SOURCES,
@@ -268,3 +322,245 @@ def import_fable_phase1(source_root: Path = Path("/mnt/c/projects/fable-trace-lo
     (dest / "IMPORT_MANIFEST.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     append_trace_event("fable-import", {"manifest": manifest}, run_id=stamp)
     return manifest
+
+
+def import_autoresearch(
+    repo_url: str = "https://github.com/karpathy/autoresearch",
+    branch: str | None = None,
+    import_root: Path = TRACE_ROOT / "imports" / "karpathy-autoresearch",
+) -> dict[str, Any]:
+    ensure_trace_dirs()
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    dest = import_root / stamp
+    source_root = dest / "source"
+
+    import_root.mkdir(parents=True, exist_ok=True)
+
+    clone_cmd = ["git", "clone", "--depth", "1", "--single-branch"]
+    if branch:
+        clone_cmd.extend(["--branch", branch])
+    clone_cmd.extend([repo_url, str(source_root)])
+    run_command(clone_cmd, cwd=import_root, timeout_sec=600)
+
+    source_commit = "unknown"
+    source_branch = branch or "unknown"
+    source_url = repo_url
+    try:
+        source_commit = run_command(["git", "-C", str(source_root), "rev-parse", "HEAD"], timeout_sec=60)
+        source_branch = run_command(["git", "-C", str(source_root), "rev-parse", "--abbrev-ref", "HEAD"], timeout_sec=60)
+        source_url = run_command(
+            ["git", "-C", str(source_root), "config", "--get", "remote.origin.url"],
+            timeout_sec=60,
+        ) or repo_url
+    except Exception:
+        pass
+
+    files: list[str] = []
+    row_counts: dict[str, int] = {}
+    for path in sorted(source_root.rglob("*")):
+        if not path.is_file():
+            continue
+        if ".git" in path.parts:
+            continue
+        suffix = path.suffix.lower()
+        if suffix not in {".jsonl", ".json", ".md", ".txt", ".yaml", ".yml", ".toml", ".py", ".ipynb", ".csv"}:
+            continue
+        rel = path.relative_to(source_root).as_posix()
+        files.append(rel)
+        if suffix == ".jsonl":
+            row_counts[rel] = count_jsonl(path)
+
+    manifest = {
+        "schema_version": "trace-import-manifest-v1",
+        "source": "karpathy/autoresearch",
+        "source_root": str(source_root),
+        "source_url": source_url,
+        "source_commit_ref": source_commit,
+        "source_branch": source_branch,
+        "imported_at": now_iso(),
+        "destination": str(dest),
+        "files": files,
+        "row_counts": row_counts,
+        "status": "downloaded_for_internal_review",
+        "caveats": [
+            "Repository contains model training/inference experiment code; production use requires legal/privacy review.",
+            "Commercial/public reuse must pass our internal policy and license checks.",
+            "Normalize before any training ingestion; this import is review-only.",
+        ],
+    }
+    (dest / "IMPORT_MANIFEST.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    append_trace_event("autoresearch-import", {"manifest": manifest}, run_id=stamp)
+    return manifest
+
+
+def _normalize_windows_path(path_text: str) -> Path | None:
+    match = re.match(r"^([A-Za-z]):[\\/](.*)$", path_text)
+    if not match:
+        return None
+    drive = match.group(1).lower()
+    tail = match.group(2).replace("\\", "/")
+    return Path(f"/mnt/{drive}/{tail}")
+
+
+def _sanitize_file_text(src: Path, dst: Path) -> tuple[int, int]:
+    text = src.read_text(encoding="utf-8", errors="replace")
+    scrubbed, redactions = scrub_text(text)
+    dst.write_text(scrubbed, encoding="utf-8")
+    return redactions, 1
+
+
+def _sanitize_file_jsonl(src: Path, dst: Path) -> tuple[int, int, int]:
+    rows_in = 0
+    rows_out = 0
+    redactions = 0
+    lines: list[str] = []
+    with src.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if not line.strip():
+                lines.append("")
+                continue
+            rows_in += 1
+            try:
+                payload = json.loads(line)
+                cleaned, row_redactions = scrub_obj(payload)
+                rows_out += 1
+                lines.append(json.dumps(cleaned, ensure_ascii=False))
+            except json.JSONDecodeError:
+                cleaned_text, row_redactions = scrub_text(line.rstrip("\n"))
+                rows_out += 1
+                lines.append(cleaned_text)
+            except Exception:
+                cleaned_text, row_redactions = scrub_text(line.rstrip("\n"))
+                rows_out += 1
+                lines.append(cleaned_text)
+            redactions += int(row_redactions if isinstance(row_redactions, int) else 0)
+    if lines:
+        dst.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    else:
+        dst.write_text("", encoding="utf-8")
+    return rows_in, rows_out, redactions
+
+
+def _sanitize_file_json(src: Path, dst: Path) -> tuple[int, int, int]:
+    text = src.read_text(encoding="utf-8", errors="replace")
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        scrubbed, redactions = scrub_text(text)
+        dst.write_text(scrubbed, encoding="utf-8")
+        return 1, 1, redactions
+    cleaned, redactions = scrub_obj(payload)
+    dst.write_text(json.dumps(cleaned, indent=2, ensure_ascii=False), encoding="utf-8")
+    rows_in = len(payload) if isinstance(payload, list) else 1
+    rows_out = len(cleaned) if isinstance(cleaned, list) else 1
+    return rows_in, rows_out, redactions
+
+
+def _read_manifest(import_manifest: Path) -> dict[str, Any]:
+    with import_manifest.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def sanitize_autoresearch_import(
+    import_stamp: str | None = None,
+    import_root: Path = TRACE_ROOT / "imports" / "karpathy-autoresearch",
+    sanitized_root: Path = TRACE_ROOT / "sanitized" / "karpathy-autoresearch",
+) -> dict[str, Any]:
+    ensure_trace_dirs()
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+    manifest_path: Path | None = None
+    if import_stamp is not None:
+        manifest_candidate = import_root / import_stamp / "IMPORT_MANIFEST.json"
+        if not manifest_candidate.exists():
+            raise FileNotFoundError(f"Import manifest not found for stamp: {manifest_candidate}")
+        manifest_path = manifest_candidate
+    else:
+        candidates = sorted(import_root.rglob("IMPORT_MANIFEST.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+        if not candidates:
+            raise FileNotFoundError(f"No import manifests found under: {import_root}")
+        manifest_path = candidates[0]
+
+    manifest = _read_manifest(manifest_path)
+    source_root = manifest_path.parent / "source"
+    if not source_root.exists():
+        manifest_source_root = str(manifest.get("source_root", "")).strip()
+        if manifest_source_root:
+            candidate = Path(manifest_source_root)
+            if candidate.exists():
+                source_root = candidate
+            else:
+                mapped = _normalize_windows_path(manifest_source_root)
+                if mapped and mapped.exists():
+                    source_root = mapped
+    if not source_root.exists():
+        raise FileNotFoundError(f"Import source directory not found: {source_root}")
+
+    destination = sanitized_root / manifest_path.parent.name
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True, exist_ok=True)
+
+    files: list[str] = []
+    row_counts: dict[str, dict[str, int]] = {}
+    file_count = 0
+    rows_in_total = 0
+    rows_out_total = 0
+    redactions_total = 0
+    for path in sorted(source_root.rglob("*")):
+        if not path.is_file():
+            continue
+        if ".git" in path.parts:
+            continue
+        if path.suffix.lower() not in AUTORESEARCH_SANITIZE_EXTENSIONS:
+            continue
+
+        relative = path.relative_to(source_root)
+        destination_path = destination / relative
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+
+        suffix = path.suffix.lower()
+        file_count += 1
+        files.append(relative.as_posix())
+        if suffix == ".jsonl":
+            in_rows, out_rows, file_redactions = _sanitize_file_jsonl(path, destination_path)
+            rows_in_total += in_rows
+            rows_out_total += out_rows
+            redactions_total += file_redactions
+            row_counts[relative.as_posix()] = {"rows_in": in_rows, "rows_out": out_rows}
+            continue
+        if suffix in {".json", ".ipynb"}:
+            in_rows, out_rows, file_redactions = _sanitize_file_json(path, destination_path)
+            rows_in_total += in_rows
+            rows_out_total += out_rows
+            redactions_total += file_redactions
+            continue
+        file_redactions, _ = _sanitize_file_text(path, destination_path)
+        redactions_total += file_redactions
+
+    sanitized_manifest = {
+        "schema_version": "trace-autoresearch-sanitize-v1",
+        "source": "karpathy/autoresearch",
+        "source_manifest": str(manifest_path),
+        "source_root": str(source_root),
+        "source_stamp": manifest_path.parent.name,
+        "import_stamp": manifest_path.parent.name,
+        "sanitized_root": str(destination),
+        "sanitized_at": now_iso(),
+        "run_id": stamp,
+        "status": "sanitized_for_internal_review",
+        "file_count": file_count,
+        "files": files,
+        "rows_in": rows_in_total,
+        "rows_out": rows_out_total,
+        "row_counts": row_counts,
+        "redaction_count": redactions_total,
+        "caveats": [
+            "Sanitization only redacts obvious secrets/paths and truncates long payload-like content.",
+            "This output is for internal review. Legal/license checks still required before training.",
+            "Binary-like files are excluded by extension when sanitizing.",
+        ],
+    }
+    (destination / "SANITIZED_MANIFEST.json").write_text(json.dumps(sanitized_manifest, indent=2), encoding="utf-8")
+    append_trace_event("autoresearch-sanitized", {"manifest": sanitized_manifest}, run_id=stamp)
+    return sanitized_manifest

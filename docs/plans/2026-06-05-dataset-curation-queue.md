@@ -4,7 +4,7 @@
 
 **Goal:** Make AI-training useful as George's repeatable dataset curation workbench, not a one-off log pile.
 
-**Architecture:** Keep curated data on `S:\AITraining` and process/control code in `C:\projects\ai-training`. Use explicit source registries, sanitized JSONL examples, split manifests, eval gates, and Automation Review cards before any adapter promotion. Training scripts remain CLI/source-of-truth; the control panel is only status + guarded launch.
+**Architecture:** Keep curated data on `S:\AITraining` and process/control code in `C:\projects\ai-training-lab\unsloth`. Use explicit source registries, sanitized JSONL examples, split manifests, eval gates, and Automation Review cards before any adapter promotion. Training scripts remain CLI/source-of-truth; the control panel is only status + guarded launch.
 
 **Tech Stack:** Python stdlib scripts, JSON/JSONL manifests, existing Unsloth scripts, Mission Control task/review records.
 

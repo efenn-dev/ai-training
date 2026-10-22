@@ -41,7 +41,7 @@
         <section class="card">
           <h2>Create arena task</h2>
           <label>Title<input id="arena-title" placeholder="Fix flaky export test" /></label>
-          <label>Repo path<input id="arena-repo" value="/mnt/c/projects/ai-training" /></label>
+          <label>Repo path<input id="arena-repo" value="/mnt/c/projects/ai-training-lab/unsloth" /></label>
           <label>Task prompt<textarea id="arena-prompt" rows="6" placeholder="What should candidate agents change?"></textarea></label>
           <label>Acceptance criteria<textarea id="arena-acceptance" rows="4" placeholder="Tests, UX expectations, forbidden regressions"></textarea></label>
           <button id="create-task">Create Task</button>
@@ -182,11 +182,51 @@
           <pre class="mini" id="trace-summary-json">Loading trace summary…</pre>
         </section>
 
+        <section class="card span-2">
+          <div class="card-title">
+            <div>
+              <p class="eyebrow">Hermes launcher</p>
+              <h2>Local-first request</h2>
+            </div>
+            <button id="run-local-first-request">Run request</button>
+          </div>
+          <div class="batch-controls">
+            <label>Task type
+              <select id="local-first-task-type">
+                <option value="summarization">summarization</option>
+                <option value="classification">classification</option>
+                <option value="low_risk_inspection">low_risk_inspection</option>
+                <option value="route_draft">route_draft</option>
+                <option value="draft_label">draft_label</option>
+                <option value="risky_edit">risky_edit</option>
+                <option value="config_change">config_change</option>
+                <option value="hard_debugging">hard_debugging</option>
+              </select>
+            </label>
+            <label>Risk
+              <select id="local-first-risk">
+                <option value="low">low</option>
+                <option value="normal">normal</option>
+                <option value="high">high</option>
+                <option value="critical">critical</option>
+              </select>
+            </label>
+            <label>Max tokens
+              <input id="local-first-max-tokens" type="number" min="64" max="2000" value="500" />
+            </label>
+          </div>
+          <label>Request<textarea id="local-first-text" rows="5" placeholder="Ask for a safe summary, classification, or route draft. Risky work will produce a frontier packet."></textarea></label>
+          <pre class="mini" id="local-first-result">No local-first request yet.</pre>
+        </section>
+
         <section class="card">
           <h2>Collectors</h2>
           <p class="subtle">Arena candidate runs now append sanitized sidecar trace events automatically. Use these buttons for one-off imports and source registry updates.</p>
           <div class="actions">
             <button id="import-fable-traces">Import Fable Phase 1</button>
+            <button id="import-autoresearch-traces">Download Karpathy AutoResearch</button>
+            <button class="secondary" id="normalize-autoresearch-traces">Normalize / sanitize AutoResearch</button>
+            <button class="secondary" id="run-local-first-smoke">Run local-first smoke</button>
             <button class="secondary" id="write-trace-sources">Write Source Registry</button>
           </div>
           <p class="warning">Collection does not approve data for commercial/public use. License and privacy review stay mandatory.</p>

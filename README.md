@@ -6,8 +6,8 @@ Purpose: isolated local fine-tuning workspace for Unsloth experiments on Emmitt'
 
 Code/control files live here:
 
-- `C:\projects\ai-training`
-- WSL: `/mnt/c/projects/ai-training`
+- `C:\projects\ai-training-lab\unsloth`
+- WSL: `/mnt/c/projects/ai-training-lab/unsloth`
 
 Hot training data and environments live on the fast S: SSD:
 
@@ -30,8 +30,8 @@ The dashboard includes a Trace Lab tab for Fable-like agent training data:
 Useful commands:
 
 ```bash
-python3 /mnt/c/projects/ai-training/scripts/trace/import_fable_phase1.py
-python3 /mnt/c/projects/ai-training/scripts/trace/write_recommended_sources.py
+python3 /mnt/c/projects/ai-training-lab/unsloth/scripts/trace/import_fable_phase1.py
+python3 /mnt/c/projects/ai-training-lab/unsloth/scripts/trace/write_recommended_sources.py
 ```
 
 ## Environment
@@ -39,8 +39,8 @@ python3 /mnt/c/projects/ai-training/scripts/trace/write_recommended_sources.py
 The setup uses `uv` plus a dedicated Python 3.12 venv:
 
 ```bash
-/mnt/c/projects/ai-training/scripts/setup_unsloth.sh
-/mnt/c/projects/ai-training/scripts/verify_unsloth.sh
+/mnt/c/projects/ai-training-lab/unsloth/scripts/setup_unsloth.sh
+/mnt/c/projects/ai-training-lab/unsloth/scripts/verify_unsloth.sh
 ```
 
 Activation:
@@ -56,10 +56,12 @@ Mission Control app name: `ai-training`
 
 Commands:
 
-- `ui` — start the local Unsloth control panel at `http://127.0.0.1:5196/`
+- `ui` — start the local Unsloth control panel on port `5196` and open it in the browser
 - `setup` — run/repair the Unsloth environment install
 - `verify` — check GPU, torch, and Unsloth imports
 - `shell` — open a Windows Terminal tab into WSL with the env activated
+
+On Windows, the `ui` command should use `scripts\launch_control_panel.ps1`. It starts the WSL server, repairs an old loopback-only listener if needed, and opens the reachable WSL VM URL automatically.
 
 The control panel is now arena-first and uses existing CLI scripts as the source of truth for setup/training. It provides:
 
@@ -74,9 +76,11 @@ The control panel is now arena-first and uses existing CLI scripts as the source
 Manual launch from WSL:
 
 ```bash
-cd /mnt/c/projects/ai-training
+cd /mnt/c/projects/ai-training-lab/unsloth
 ./scripts/run_control_panel.sh
 ```
+
+If Windows cannot reach `127.0.0.1:5196`, open the WSL IP printed by the server, or run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/launch_control_panel.ps1` from `C:\projects\ai-training-lab\unsloth`.
 
 ## First experiments
 
@@ -95,13 +99,13 @@ V0.1 trains on ClipLab AI Review accept/reject feedback for edit-director decisi
 Dataset curation:
 
 ```bash
-python3 /mnt/c/projects/ai-training/scripts/curate_cliplab_edit_director_v01.py
+python3 /mnt/c/projects/ai-training-lab/unsloth/scripts/curate_cliplab_edit_director_v01.py
 ```
 
 Local smoke train after labels exist:
 
 ```bash
-python3 /mnt/c/projects/ai-training/scripts/train_cliplab_edit_director.py \
+python3 /mnt/c/projects/ai-training-lab/unsloth/scripts/train_cliplab_edit_director.py \
   --smoke-model \
   --max-train-rows 20 \
   --max-steps 20
@@ -110,7 +114,7 @@ python3 /mnt/c/projects/ai-training/scripts/train_cliplab_edit_director.py \
 Compare an adapter against the current pipeline baseline:
 
 ```bash
-python3 /mnt/c/projects/ai-training/scripts/compare_cliplab_edit_director.py \
+python3 /mnt/c/projects/ai-training-lab/unsloth/scripts/compare_cliplab_edit_director.py \
   --adapter-dir /mnt/s/AITraining/adapters/<run-id>/adapter
 ```
 
@@ -119,7 +123,7 @@ Training now runs the comparison gate by default after saving an adapter. The ga
 For the Mission Control general-ops router lane, use:
 
 ```bash
-python3 /mnt/c/projects/ai-training/scripts/compare_gemma_orchestrator_adapter.py \
+python3 /mnt/c/projects/ai-training-lab/unsloth/scripts/compare_gemma_orchestrator_adapter.py \
   --adapter-dir /mnt/s/AITraining/adapters/<run-id>/adapter
 ```
 
@@ -128,6 +132,12 @@ That report includes strict schema validity, route/task accuracy, manual-gate mi
 Export a promoted adapter as a merged GGUF:
 
 ```bash
-python3 /mnt/c/projects/ai-training/scripts/export_cliplab_edit_director_gguf.py \
+python3 /mnt/c/projects/ai-training-lab/unsloth/scripts/export_cliplab_edit_director_gguf.py \
   --adapter-dir /mnt/s/AITraining/adapters/<run-id>/adapter
 ```
+
+## Compact frontier review packets
+
+Use `scripts/generate_frontier_review_packet.py` when a frontier reviewer needs a small packet instead of raw logs/transcripts. It supports `gaming-pipeline` and `general-ops-router` lanes and writes paired Markdown/JSON artifacts with queue counts, changed examples, low-confidence drafts, disagreements, errors, eval metrics, and raw artifact pointers.
+
+See `docs/frontier-review-packets.md` for usage and the checklist for when frontier review is actually required.

@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-REPO_ROOT = Path("/mnt/c/projects/ai-training").resolve()
+REPO_ROOT = Path("/mnt/c/projects/ai-training-lab/unsloth").resolve()
 S_ROOT = Path("/mnt/s/AITraining")
 RUNS_ROOT = S_ROOT / "runs"
 CONTROL_ROOT = RUNS_ROOT / "control-panel"
@@ -33,6 +33,8 @@ WORKTREES_ROOT = ARENA_ROOT / "worktrees"
 TRACE_ROOT = S_ROOT / "traces"
 STATIC_ROOT = REPO_ROOT / "control_panel" / "static"
 JOBS_JSON = CONTROL_ROOT / "jobs.json"
+LOCAL_FIRST_TELEMETRY_JSONL = TRACE_ROOT / "metrics" / "local-first-telemetry.jsonl"
+LOCAL_FIRST_SUMMARY_JSON = TRACE_ROOT / "metrics" / "local-first-summary.json"
 HOST = os.environ.get("AI_TRAINING_UI_HOST", "127.0.0.1")
 PORT = int(os.environ.get("AI_TRAINING_UI_PORT", "5196"))
 MAX_LOG_BYTES = 500_000
@@ -77,6 +79,15 @@ COMMANDS: dict[str, dict[str, Any]] = {
         "env_keys": {"RUN_ID"},
         "log_prefix": "smoke-train",
     },
+    "local-first-smoke": {
+        "label": "Local-first Router Smoke",
+        "description": "Run safe local-first router smoke cases and generate frontier packets for failures.",
+        "argv": [str(REPO_ROOT / "scripts" / "local_first_runner.py"), "--smoke", "--log-shadow", "--timeout", "45", "--max-tokens", "300"],
+        "risk": "low",
+        "timeout_seconds": 420,
+        "env_keys": set(),
+        "log_prefix": "local-first-smoke",
+    },
     "trace-import-fable": {
         "label": "Import Fable Phase 1 Traces",
         "description": "Copy processed Fable trace artifacts into the AI Training trace store with a manifest.",
@@ -85,6 +96,24 @@ COMMANDS: dict[str, dict[str, Any]] = {
         "timeout_seconds": 900,
         "env_keys": set(),
         "log_prefix": "trace-import-fable",
+    },
+    "trace-import-autoresearch": {
+        "label": "Download AutoResearch Repo",
+        "description": "Clone the Karpathy AutoResearch repository into the trace store for review and downstream integration.",
+        "argv": [str(REPO_ROOT / "scripts" / "trace" / "import_autoresearch.py")],
+        "risk": "low",
+        "timeout_seconds": 1200,
+        "env_keys": set(),
+        "log_prefix": "trace-import-autoresearch",
+    },
+    "trace-normalize-autoresearch": {
+        "label": "Normalize AutoResearch Traces",
+        "description": "Sanitize the latest AutoResearch import into the training-sanitized trace lane.",
+        "argv": [str(REPO_ROOT / "scripts" / "trace" / "normalize_autoresearch.py")],
+        "risk": "low",
+        "timeout_seconds": 1200,
+        "env_keys": set(),
+        "log_prefix": "trace-normalize-autoresearch",
     },
     "trace-write-sources": {
         "label": "Write Recommended Trace Sources",
@@ -382,15 +411,137 @@ def trace_common_module():
 def trace_lab_payload() -> dict[str, Any]:
     try:
         module = trace_common_module()
-        return module.summarize_trace_store()
+        payload = module.summarize_trace_store()
+        payload["local_first"] = local_first_summary()
+        return payload
     except Exception as exc:  # noqa: BLE001 - status payload should stay usable
         return {"root": str(TRACE_ROOT), "error": repr(exc), "updated_at": now_iso()}
+
+
+def iter_jsonl(path: Path, limit: int = 5000) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+    return rows[-limit:]
+
+
+def safe_float(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except Exception:
+        return 0.0
+
+
+def local_first_summary() -> dict[str, Any]:
+    ensure_dirs()
+    rows = iter_jsonl(LOCAL_FIRST_TELEMETRY_JSONL)
+    split = {"local": 0, "frontier": 0, "human": 0, "unknown": 0}
+    audit = {"pass": 0, "fail": 0, "not_run": 0, "unknown": 0}
+    avoided = 0
+    input_tokens = 0
+    output_tokens = 0
+    cost_usd = 0.0
+    recent: list[dict[str, Any]] = []
+    for row in rows:
+        worker_class = str(row.get("worker_class") or "unknown")
+        split[worker_class if worker_class in split else "unknown"] += 1
+        if row.get("frontier_call_avoided") is True:
+            avoided += 1
+            input_tokens += int(safe_float(row.get("estimated_input_tokens")))
+            output_tokens += int(safe_float(row.get("estimated_output_tokens")))
+            cost_usd += safe_float(row.get("estimated_cost_usd"))
+        qa_raw = row.get("quality_audit_result")
+        qa: dict[str, Any] = qa_raw if isinstance(qa_raw, dict) else {}
+        if qa.get("passed") is True:
+            audit["pass"] += 1
+        elif qa.get("passed") is False:
+            audit["fail"] += 1
+        else:
+            status = str(qa.get("status") or "not_run")
+            audit[status if status in audit else "unknown"] += 1
+        recent.append(
+            {
+                "recorded_at": row.get("recorded_at"),
+                "task_type": row.get("task_type"),
+                "worker_class": worker_class,
+                "route_mode": row.get("route_mode"),
+                "frontier_call_avoided": row.get("frontier_call_avoided"),
+                "model_used": row.get("model_used"),
+                "quality_audit_result": qa,
+                "escalation_reason": row.get("escalation_reason"),
+            }
+        )
+    summary = {
+        "schema_version": "local-first-summary-v1",
+        "path": str(LOCAL_FIRST_TELEMETRY_JSONL),
+        "record_count": len(rows),
+        "local_frontier_split": split,
+        "frontier_calls_avoided": avoided,
+        "estimated_tokens_saved": {"input": input_tokens, "output": output_tokens, "total": input_tokens + output_tokens},
+        "estimated_cost_saved_usd": round(cost_usd, 6),
+        "quality_audit": audit,
+        "recent": recent[-10:][::-1],
+        "privacy": "Raw prompts, descriptions, secrets, and prompt text are not stored; router logs keep only task metadata and text digests.",
+        "updated_at": now_iso(),
+    }
+    LOCAL_FIRST_SUMMARY_JSON.parent.mkdir(parents=True, exist_ok=True)
+    LOCAL_FIRST_SUMMARY_JSON.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary
 
 
 def trace_sources_payload() -> list[dict[str, Any]]:
     module = trace_common_module()
     module.write_recommended_sources()
     return module.PUBLIC_TRACE_SOURCES
+
+
+def local_first_runner_module():
+    scripts_root = REPO_ROOT / "scripts"
+    if str(scripts_root) not in sys.path:
+        sys.path.insert(0, str(scripts_root))
+    import local_first_runner  # type: ignore[import-not-found]
+
+    return local_first_runner
+
+
+def local_first_run_payload(body: dict[str, Any]) -> dict[str, Any]:
+    module = local_first_runner_module()
+    cfg = module.load_config(REPO_ROOT / "config" / "local_frontier_router_policy.json")
+    text = str(body.get("text") or "").strip()
+    if not text:
+        raise ValueError("Request text is required")
+    if len(text) > 20_000:
+        raise ValueError("Request text is too long for the dashboard launcher")
+    task_type = str(body.get("taskType") or body.get("task_type") or "summarization")
+    risk = str(body.get("risk") or "low")
+    app = str(body.get("app") or "ai-training")
+    result = module.run_one(
+        {
+            "task_type": task_type,
+            "risk": risk,
+            "text": text,
+            "app": app,
+            "source": "control_panel_local_first_launcher",
+        },
+        cfg,
+        timeout=float(body.get("timeout") or 45),
+        max_tokens=int(body.get("maxTokens") or body.get("max_tokens") or 500),
+        temperature=float(body.get("temperature") or 0.1),
+        log_shadow=True,
+        packet_root=module.DEFAULT_PACKET_ROOT,
+    )
+    local_first_summary()
+    return result
 
 
 
@@ -1080,6 +1231,8 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, public_commands())
             if path == "/api/traces/summary":
                 return json_response(self, trace_lab_payload())
+            if path == "/api/local-first/summary":
+                return json_response(self, local_first_summary())
             if path == "/api/traces/sources":
                 return json_response(self, trace_sources_payload())
             if path == "/api/jobs":
@@ -1126,8 +1279,16 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, asdict(job), 201)
             if parsed.path == "/api/traces/import-fable":
                 return json_response(self, asdict(run_job("trace-import-fable", body)), 201)
+            if parsed.path == "/api/traces/import-autoresearch":
+                return json_response(self, asdict(run_job("trace-import-autoresearch", body)), 201)
+            if parsed.path == "/api/traces/normalize-autoresearch":
+                return json_response(self, asdict(run_job("trace-normalize-autoresearch", body)), 201)
             if parsed.path == "/api/traces/write-sources":
                 return json_response(self, asdict(run_job("trace-write-sources", body)), 201)
+            if parsed.path == "/api/local-first/smoke":
+                return json_response(self, asdict(run_job("local-first-smoke", body)), 201)
+            if parsed.path == "/api/local-first/run":
+                return json_response(self, local_first_run_payload(body))
             if parsed.path.startswith("/api/jobs/") and parsed.path.endswith("/cancel"):
                 job_id = parsed.path.split("/")[3]
                 job = cancel_job(job_id)
@@ -1181,10 +1342,23 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     ensure_dirs()
     load_jobs()
-    if HOST not in {"127.0.0.1", "localhost", "::1"}:
-        raise SystemExit("Refusing to bind non-local host; set AI_TRAINING_UI_HOST=127.0.0.1")
+    allow_wsl_host_bind = os.environ.get("AI_TRAINING_ALLOW_WSL_HOST_BIND", "").lower() in {"1", "true", "yes"}
+    if HOST not in {"127.0.0.1", "localhost", "::1"} and not (allow_wsl_host_bind and HOST in {"0.0.0.0", "::"}):
+        raise SystemExit(
+            "Refusing to bind non-local host; set AI_TRAINING_UI_HOST=127.0.0.1 "
+            "or AI_TRAINING_ALLOW_WSL_HOST_BIND=1 for the Windows WSL launcher"
+        )
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"AI Training / Unsloth control panel: http://{HOST}:{PORT}/", flush=True)
+    urls = [f"http://{HOST}:{PORT}/"]
+    if HOST == "0.0.0.0":
+        try:
+            proc = subprocess.run(["hostname", "-I"], text=True, capture_output=True, timeout=2)
+            wsl_ip = (proc.stdout.split() or [""])[0]
+            if wsl_ip:
+                urls.append(f"http://{wsl_ip}:{PORT}/")
+        except Exception:
+            pass
+    print("AI Training / Unsloth control panel: " + " | ".join(urls), flush=True)
     httpd.serve_forever()
 
 

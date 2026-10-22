@@ -143,7 +143,7 @@ source /mnt/s/AITraining/unsloth/activate.sh
 Verification:
 
 ```bash
-/mnt/c/projects/ai-training/scripts/verify_unsloth.sh
+/mnt/c/projects/ai-training-lab/unsloth/scripts/verify_unsloth.sh
 ```
 
 Known caveat: Flash Attention 2 reports broken; Unsloth falls back to Xformers. Acceptable for first LoRA experiments.
@@ -153,5 +153,5 @@ Known caveat: Flash Attention 2 reports broken; Unsloth falls back to Xformers. 
 When ClipLab MVP is complete, resume with:
 
 ```text
-Read C:\projects\ai-training\handoffs\cliplab-edit-director-lora-v0.1.md and C:\projects\ai-training\README.md. Build the ClipLab Edit Director LoRA v0.1 dataset scaffold under S:\AITraining\datasets\cliplab-edit-director-v0.1. Do not train yet. Create schema/train/eval placeholders and an exporter plan from gaming-pipeline outputs, then ask for/prepare human labeling workflow.
+Read C:\projects\ai-training-lab\unsloth\handoffs\cliplab-edit-director-lora-v0.1.md and C:\projects\ai-training-lab\unsloth\README.md. Build the ClipLab Edit Director LoRA v0.1 dataset scaffold under S:\AITraining\datasets\cliplab-edit-director-v0.1. Do not train yet. Create schema/train/eval placeholders and an exporter plan from gaming-pipeline outputs, then ask for/prepare human labeling workflow.
 ```

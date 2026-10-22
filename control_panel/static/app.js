@@ -116,6 +116,9 @@ function renderTraceLab(traceLab) {
   state.traceLab = traceLab || {};
   const imports = traceLab.imports || [];
   const sources = traceLab.recommended_sources || [];
+  const localFirst = traceLab.local_first || {};
+  const split = localFirst.local_frontier_split || {};
+  const audit = localFirst.quality_audit || {};
   const latestImport = imports[0] || {};
   $('trace-metrics').innerHTML = [
     ['Raw events', traceLab.raw_events ?? 0],
@@ -123,7 +126,13 @@ function renderTraceLab(traceLab) {
     ['Imports', traceLab.import_count ?? 0],
     ['Normalized rows', traceLab.normalized_rows ?? 0],
     ['Sanitized rows', traceLab.sanitized_rows ?? 0],
+    ['Sanitized packs', traceLab.sanitized_pack_count ?? 0],
+    ['Sanitized review files', traceLab.sanitized_review_files ?? 0],
     ['Sources', sources.length],
+    ['Local/frontier split', `${split.local ?? 0} local · ${split.frontier ?? 0} frontier · ${split.human ?? 0} human`],
+    ['Frontier avoided', localFirst.frontier_calls_avoided ?? 0],
+    ['Est. tokens saved', localFirst.estimated_tokens_saved?.total ?? 0],
+    ['Quality audits', `${audit.pass ?? 0} pass · ${audit.fail ?? 0} fail · ${audit.not_run ?? 0} not run`],
     ['Latest import', latestImport.imported_at || 'none'],
     ['Trace root', traceLab.root || 'unknown'],
   ].map(([label, value]) => `<div class="metric"><span>${esc(label)}</span><b>${esc(value)}</b></div>`).join('');
@@ -131,7 +140,25 @@ function renderTraceLab(traceLab) {
   $('trace-summary-json').textContent = JSON.stringify({
     root: traceLab.root,
     raw_events: traceLab.raw_events,
+    local_first: {
+      record_count: localFirst.record_count,
+      split: localFirst.local_frontier_split,
+      frontier_calls_avoided: localFirst.frontier_calls_avoided,
+      estimated_tokens_saved: localFirst.estimated_tokens_saved,
+      estimated_cost_saved_usd: localFirst.estimated_cost_saved_usd,
+      quality_audit: localFirst.quality_audit,
+      recent: localFirst.recent,
+      privacy: localFirst.privacy,
+    },
     imports: imports.slice(0, 3).map(item => ({ source: item.source, imported_at: item.imported_at, row_counts: item.row_counts, destination: item.destination })),
+    sanitized_imports: (traceLab.sanitized_imports || []).slice(0, 3).map(item => ({
+      source: item.source,
+      sanitized_at: item.sanitized_at,
+      status: item.status,
+      file_count: item.file_count,
+      redaction_count: item.redaction_count,
+      sanitized_root: item.sanitized_root,
+    })),
     updated_at: traceLab.updated_at,
   }, null, 2);
 
@@ -164,6 +191,37 @@ async function runTraceAction(path) {
     await refreshStatus();
     await refreshLog();
   } catch (err) { alert(err.message); }
+}
+
+async function runLocalFirstRequest() {
+  const body = {
+    taskType: $('local-first-task-type').value,
+    risk: $('local-first-risk').value,
+    text: $('local-first-text').value.trim(),
+    maxTokens: Number($('local-first-max-tokens').value || 500),
+  };
+  if (!body.text) {
+    alert('Enter a request first.');
+    return;
+  }
+  $('local-first-result').textContent = 'Running local-first route…';
+  try {
+    const result = await api('/api/local-first/run', { method: 'POST', body: JSON.stringify(body) });
+    $('local-first-result').textContent = JSON.stringify({
+      final_mode: result.final_mode,
+      model_used: result.model_used,
+      endpoint_name: result.endpoint_name,
+      confidence: result.confidence,
+      answer: result.answer,
+      frontier_packet: result.frontier_packet,
+      policy_reason: result.policy_decision?.reason,
+      local_attempts: result.local_attempts,
+      elapsed_sec: result.elapsed_sec,
+    }, null, 2);
+    await refreshTraces();
+  } catch (err) {
+    $('local-first-result').textContent = err.message;
+  }
 }
 
 async function runCommand(command) {
@@ -394,6 +452,10 @@ $('artifact-up').addEventListener('click', upArtifact);
 $('refresh-arena').addEventListener('click', refreshArena);
 $('refresh-traces').addEventListener('click', refreshTraces);
 $('import-fable-traces').addEventListener('click', () => runTraceAction('/api/traces/import-fable'));
+$('import-autoresearch-traces').addEventListener('click', () => runTraceAction('/api/traces/import-autoresearch'));
+$('normalize-autoresearch-traces').addEventListener('click', () => runTraceAction('/api/traces/normalize-autoresearch'));
+$('run-local-first-smoke').addEventListener('click', () => runTraceAction('/api/local-first/smoke'));
+$('run-local-first-request').addEventListener('click', runLocalFirstRequest);
 $('write-trace-sources').addEventListener('click', () => runTraceAction('/api/traces/write-sources'));
 $('create-task').addEventListener('click', createTask);
 $('add-candidate').addEventListener('click', addCandidate);
